@@ -6,6 +6,10 @@ Bump the version in `plugin.json`, add an entry here, then `claude plugin update
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.2.1 - 2026-10-26
+
 Changed
 
 - Idle chats are listed by default in the full view; the `Idle chats` button and `i` hide them.

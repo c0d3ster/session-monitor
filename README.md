@@ -65,10 +65,10 @@ Copy the folder somewhere permanent (for example `~/mods/agent-monitor`) and add
 
 ## Other chats
 
-Below this session, the pane lists every other chat it finds (from `~/.claude/sessions/`): working chats first, then idle ones (toggle them with the idle chats button). Each row reads `<o> ● name`, then its figures and cost. Press the name to open that chat's details.
+Below this session, the pane lists every other chat it finds (from `~/.claude/sessions/`): working chats first, then idle ones (shown by default; the idle chats button or `i` hides them). Each row reads `<o> ● name`, then its figures and cost. Press the name to open that chat's details.
 
 - Status dot: working, idle, or handed off. A chat that handed its work to a background job (its session file has a `parkedJobId`) is shown as idle and labelled `handed off to <job name>`, not as working.
-- Working detection: a chat counts as working when its session file says busy or its transcript changed in the last 45 seconds. Background jobs always report idle in their session file, so the transcript is what shows them working.
+- Working detection: a chat counts as working when its session file says busy or its transcript changed in the last 45 seconds. A background job whose `state.json` has a `needs` message (for example `send a prompt to start`) counts as idle and reads `waiting: <what it needs>`. Background jobs always report idle in their session file, so the transcript is what shows them working.
 - Details block: folder, handoff, kind, started, latest prompt, idle time, latest activity, tool calls, agents, tokens, context and cache, and a problem line if the transcript can't be read. Only one chat is open at a time.
 - Cache by chat: context size, cache hit % and time left per chat, soonest to lapse first. Transcripts over 4 MiB are read from the tail (`scripts/big-transcript.cjs`).
 - Usage limits: the 5 hour, weekly and spend limits with an estimated cost, and a toast when one passes a threshold.
