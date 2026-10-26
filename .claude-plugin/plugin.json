@@ -1,0 +1,7 @@
+{
+  "name": "session-monitor",
+  "version": "0.2.0",
+  "description": "A live pane for Claude Code: this session, other chats, usage limits and cache, and what the agents are doing",
+  "author": { "name": "Karl Adams" },
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,4 @@
+{
+  "description": "Agent monitor hooks module",
+  "modules": ["./register.ts"]
+}
