@@ -271,3 +271,30 @@ test('a subagent handing its report back is not counted as a tool call', async (
   expect((await ui.find({ type: 'Text', text: /SubagentHandback/ })) === undefined).toBe(true)
   await ui.unmount()
 })
+
+test('Show and Clear finished sit in the agents section, and Clear appears once an agent is done', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.agent.spawn(spawnInput('find the TODOs', 'todo hunt', 'Explore'))
+  let ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'filter' })) === undefined).toBe(false)
+  expect((await ui.find({ key: 'clear' })) === undefined).toBe(true)
+  await ui.unmount()
+
+  await $.turn.complete({
+    answer: 'done',
+    durationMs: 10,
+    isAborted: false,
+    turnId: 'turn-1',
+    agentId: 'agent-1',
+    reason: 'answer',
+  })
+  ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'clear' })) === undefined).toBe(false)
+  await ui.press({ key: 'clear' })
+  expect((await ui.find({ key: 'open-agent-1' })) === undefined).toBe(true)
+  expect((await ui.find({ key: 'clear' })) === undefined).toBe(true)
+  await ui.unmount()
+})

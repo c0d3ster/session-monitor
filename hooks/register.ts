@@ -702,6 +702,45 @@ export const register: Register = on => {
     const mine = live.sessions.filter(l => l.id === live.mine)[0]
     const sessionHeading = 'This session' + (mine ? ' · ' + mine.name : '')
 
+    // The agents section's own controls: the filter, and clearing finished agents
+    // when there are any. Both act on the agents list only.
+    const clearable = subs.length - running > 0
+    const agentControls = Box({
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        Button({
+          key: 'filter',
+          label: 'Show: ' + (v.filter || 'all'),
+          hotkey: 'f',
+          plain: true,
+          onPress: async () => {
+            await update($, view, current =>
+              Object.assign({}, current, {
+                filter: current.filter === undefined ? ('running' as const) : current.filter === 'running' ? ('failed' as const) : undefined,
+              }),
+            )
+          },
+        }),
+        ...(clearable
+          ? [
+              Button({
+                key: 'clear',
+                label: 'Clear finished',
+                hotkey: 'c',
+                plain: true,
+                onPress: async () => {
+                  await update($, agents, current => dismissFinished(current))
+                  await update($, view, current =>
+                    current.openId && hidden[current.openId] ? Object.assign({}, current, { openId: undefined }) : current,
+                  )
+                },
+              }),
+            ]
+          : []),
+      ],
+    })
+
     const summary = [
       Text({ bold: true, color: 'cyan', children: [cut(sessionHeading, cols)] }),
       Box({
@@ -720,6 +759,7 @@ export const register: Register = on => {
           Text({ children: [s.usd !== undefined ? 'session ' + money(s.usd) : ''] }),
         ],
       }),
+      agentControls,
       Text({ dimColor: true, children: ['session ' + sessionTokens + cached] }),
     ]
 
@@ -1041,31 +1081,6 @@ export const register: Register = on => {
           plain: true,
           onPress: async () => {
             await update($, view, current => Object.assign({}, current, { mode: 'report' as const, note: undefined }))
-          },
-        }),
-        Button({
-          key: 'clear',
-          label: 'Clear finished',
-          hotkey: 'c',
-          plain: true,
-          onPress: async () => {
-            await update($, agents, current => dismissFinished(current))
-            await update($, view, current =>
-              current.openId && hidden[current.openId] ? Object.assign({}, current, { openId: undefined }) : current,
-            )
-          },
-        }),
-        Button({
-          key: 'filter',
-          label: 'Show: ' + (v.filter || 'all'),
-          hotkey: 'f',
-          plain: true,
-          onPress: async () => {
-            await update($, view, current =>
-              Object.assign({}, current, {
-                filter: current.filter === undefined ? ('running' as const) : current.filter === 'running' ? ('failed' as const) : undefined,
-              }),
-            )
           },
         }),
         ...(agentsOnly ? [] : [Button({
