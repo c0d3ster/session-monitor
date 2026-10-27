@@ -254,3 +254,18 @@ test('a tool call tagged with an agent id nobody spawned does not leave a row be
   expect((await ui.find({ type: 'Text', text: /NaN/ })) === undefined).toBe(true)
   await ui.unmount()
 })
+
+test('a subagent handing its report back is not counted as a tool call', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+
+  await $.agent.spawn(spawnInput('look around', 'map the repo', 'Explore'))
+  await $.tool.call(taggedCall({ tool: 'Grep', pattern: 'TODO', agentId: 'agent-1' }))
+  await $.tool.call(taggedCall({ tool: 'SubagentHandback', agentId: 'agent-1' }))
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /1 calls?\b/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /2 calls/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /SubagentHandback/ })) === undefined).toBe(true)
+  await ui.unmount()
+})

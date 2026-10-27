@@ -6,7 +6,9 @@ Bump the version in `plugin.json`, add an entry here, then `claude plugin update
 
 ## Unreleased
 
-Nothing yet.
+Fixed
+
+- A subagent's hand-back to its parent (the `SubagentHandback` tool call) is no longer counted as a tool call, so each subagent's call count was one too high.
 
 ## 0.2.1 - 2026-10-26
 

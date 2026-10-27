@@ -1456,6 +1456,8 @@ export const register: Register = on => {
 
   // Every tool call, attributed to the loop it ran in
   on('tool.call', async ($, e, next) => {
+    // A subagent's report back to its parent is not work it did
+    if (e.tool === 'SubagentHandback') return next(e)
     // Claude Code's own helpers (the prompt suggestion, for one) tag tool calls
     // with an agent id that was never spawned as an agent: leave those alone
     if (e.agentId) {
