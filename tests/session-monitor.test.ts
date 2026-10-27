@@ -261,7 +261,9 @@ test('a subagent handing its report back is not counted as a tool call', async (
 
   await $.agent.spawn(spawnInput('look around', 'map the repo', 'Explore'))
   await $.tool.call(taggedCall({ tool: 'Grep', pattern: 'TODO', agentId: 'agent-1' }))
-  await $.tool.call(taggedCall({ tool: 'SubagentHandback', agentId: 'agent-1' }))
+  // Not in the engine's tool typings, but it reaches `tool.call` at runtime
+  const handback = taggedCall({ tool: 'SubagentHandback', agentId: 'agent-1' })
+  await $.tool.call(handback as never)
 
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ type: 'Text', text: /1 calls?\b/ })) === undefined).toBe(false)

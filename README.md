@@ -108,7 +108,8 @@ The focus helper (`scripts/focus-window.cjs`) runs on Windows (through `focus-wi
 
 ## Files
 
-- `hooks/register.ts`: the mod
+- `hooks/register.ts`: the hooks and the pane
+- `hooks/rows.ts`, `report.ts`, `transcripts.ts`, `format.ts`, `util.ts`, `constants.ts`, `limits.ts`, `state.ts`: agent rows and cost, the report, transcript readers, formatting and shared state. The state atoms stay in `register.ts`, because the engine needs each atom defined in the file that reads and writes it.
 - `scripts/`: focus helper, big-transcript reader, window cost reader
 - `tests/session-monitor.test.ts`: pane tests
 - `CHANGELOG.md`: what changed in each version

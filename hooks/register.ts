@@ -3,25 +3,19 @@ import type { Register } from 'claude-code'
 
 import type { AgentRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, PANE, SHOW_LOG, WARN_CACHE_MS } from './constants'
+import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
+import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
+import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
+import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, isDone, isFailed, marker, matches, merge, ordered, progressOf, rollup, statusWord, summarize, upsert } from './rows'
+import { alerted, flags, hidden, listedIds } from './state'
+import { cacheStats, focusProbe, isBusy, latestNote, latestPrompt, live, liveExtra, mainTtlMs, subsOf, toolStats, ttlLabel, turnProgress, turnTools, usageStats, usdOf } from './transcripts'
+import { isRecord, num, oneLine, parseJson, str } from './util'
+import type { CacheInfo, Live, LiveExtra } from './transcripts'
+
 // Written in an ES2017 (ES8) style where it can be: no object spread, no
 // optional chaining, no nullish coalescing. The one exception is the
 // `turn.step` hook, which Claude Code requires to be an async generator.
-
-const PANE = 'session-monitor'
-const MAX_ROWS = 60
-const MAX_LOG = 40
-const SHOW_LOG = 12
-const MAX_RUNS = 10
-const LONG_MS = 3 * 60 * 1000
-const LOOP_AT = 5
-const WARN_CACHE_MS = 60 * 1000
-const MAX_REPORT_VIEW = 9500
-const ORPHAN_MS = 20 * 1000
-
-// The prompt cache keeps an entry for about five minutes after its last use,
-// and every request that reads it starts the five minutes again. Claude Code
-// does not report the real lifetime, so the countdown assumes five minutes.
-const CACHE_TTL_MS = 5 * 60 * 1000
 
 const agents = atom({ plugin: 'session-monitor', key: 'agents' } as const, [] as AgentRow[])
 const session = atom(
@@ -31,949 +25,6 @@ const session = atom(
 const view = atom({ plugin: 'session-monitor', key: 'view' } as const, {} as ViewRow)
 const runs = atom({ plugin: 'session-monitor', key: 'runs' } as const, [] as RunRecord[])
 const stats = atom({ plugin: 'session-monitor', key: 'stats' } as const, {} as StatsRow)
-
-// Alerts already shown, so each fires once
-const alerted: { [key: string]: boolean } = {}
-let historyLoaded = false
-
-// Estimated prices in dollars per million tokens. Claude Code does not report
-// what an agent cost, so per-agent cost is calculated from these and is an
-// estimate. Cache reads are billed at 0.1x input, cache writes at 1.25x.
-const RATES: Array<{ match: RegExp; input: number; output: number }> = [
-  { match: /haiku/i, input: 1, output: 5 },
-  { match: /opus/i, input: 5, output: 25 },
-  { match: /sonnet/i, input: 3, output: 15 },
-]
-
-// Agents the person has cleared, so the once-a-second sync from
-// $.agent.list() (which lists every agent of the session, finished ones too)
-// does not bring them back. Starts over when the mod reloads.
-const hidden: { [id: string]: boolean } = {}
-
-// Every agent id $.agent.list() has reported, refreshed each second: a tool call
-// from any other id is not from an agent the engine spawned
-const listedIds: { [id: string]: boolean } = {}
-let seeded = false
-
-const ARG_KEYS = ['command', 'file_path', 'pattern', 'url', 'query', 'description', 'prompt', 'path']
-
-type Usage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-}
-
-// ---------------------------------------------------------------------------
-// Data
-// ---------------------------------------------------------------------------
-
-// A usable count: a number that is not NaN or infinite, else 0
-function num(x: unknown): number {
-  return typeof x === 'number' && isFinite(x) ? x : 0
-}
-
-// What one model request cost, from the model name; unknown models are priced
-// like Sonnet
-function costOf(model: string | undefined, u: Usage): number {
-  let rate = { input: 3, output: 15 }
-  for (const candidate of RATES) {
-    if (model && candidate.match.test(model)) {
-      rate = candidate
-      break
-    }
-  }
-  const perToken = 1 / 1000000
-  return (
-    (num(u.input_tokens) * rate.input +
-      num(u.cache_creation_input_tokens) * rate.input * 1.25 +
-      num(u.cache_read_input_tokens) * rate.input * 0.1 +
-      num(u.output_tokens) * rate.output) *
-    perToken
-  )
-}
-
-// A short description of what a tool call is about, taken from its arguments
-function summarize(e: Record<string, unknown>): string {
-  for (const key of ARG_KEYS) {
-    const value = e[key]
-    if (typeof value === 'string' && value.length > 0) {
-      return value.replace(/\s+/g, ' ').slice(0, 120)
-    }
-  }
-  return ''
-}
-
-function oneLine(text: string, max: number): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, max)
-}
-
-function blank(id: string): AgentRow {
-  return {
-    id,
-    name: id === 'main' ? 'main session' : id.slice(0, 8),
-    type: id === 'main' ? 'main' : 'agent',
-    status: id === 'main' ? 'idle' : 'running',
-    tools: 0,
-    last: '',
-    startedAt: Date.now(),
-    tokIn: 0,
-    tokOut: 0,
-    tokCache: 0,
-    log: [],
-  }
-}
-
-// Adds a row for `id` if there isn't one, then applies `patch` to it
-function upsert(list: AgentRow[], id: string, patch: Partial<AgentRow>): AgentRow[] {
-  let found = false
-  const out = list.map(row => {
-    if (row.id !== id) return row
-    found = true
-    return Object.assign({}, row, patch)
-  })
-  if (!found) out.push(Object.assign(blank(id), patch))
-  return out.slice(-MAX_ROWS)
-}
-
-// Counts one tool call against `id` and adds it to that agent's log
-function bumpTool(list: AgentRow[], id: string, tool: string, detail: string): AgentRow[] {
-  const existing = list.filter(row => row.id === id)[0]
-  const base = existing || blank(id)
-  const entry = { at: Math.max(0, Date.now() - base.startedAt), tool, detail }
-  const byTool = Object.assign({}, base.byTool || {})
-  byTool[tool] = (byTool[tool] || 0) + 1
-  const what = tool + (detail ? ' ' + detail : '')
-  const patch: Partial<AgentRow> = {
-    tools: base.tools + 1,
-    repeat: base.last === what ? num(base.repeat) + 1 : 1,
-    last: what,
-    log: base.log.concat([entry]).slice(-MAX_LOG),
-    byTool,
-  }
-  if (id === 'main') {
-    patch.status = 'running'
-  } else if (!existing || existing.status !== 'running') {
-    patch.status = 'running'
-    patch.endedAt = undefined
-  }
-  return upsert(list, id, patch)
-}
-
-// Adds one model request's token counts to the agent that made it
-function addTokens(list: AgentRow[], id: string, u: Usage): AgentRow[] {
-  const base = list.filter(row => row.id === id)[0] || blank(id)
-  return upsert(list, id, {
-    usd: id === 'main' ? undefined : num(base.usd) + costOf(base.model, u),
-    tokIn: num(base.tokIn) + num(u.input_tokens) + num(u.cache_creation_input_tokens),
-    tokOut: num(base.tokOut) + num(u.output_tokens),
-    tokCache: num(base.tokCache) + num(u.cache_read_input_tokens),
-  })
-}
-
-function addSession(s: SessionRow, u: Usage, isMain: boolean): SessionRow {
-  const next = Object.assign({}, s, {
-    steps: num(s.steps) + 1,
-    usageSeen: num(s.usageSeen) + 1,
-    tokIn: num(s.tokIn) + num(u.input_tokens) + num(u.cache_creation_input_tokens),
-    tokOut: num(s.tokOut) + num(u.output_tokens),
-    tokCache: num(s.tokCache) + num(u.cache_read_input_tokens),
-  })
-  // The cache figures describe the context window, which is the main loop's
-  if (isMain) {
-    next.lastUncached = num(u.input_tokens)
-    next.lastCacheWrite = num(u.cache_creation_input_tokens)
-    next.lastCacheRead = num(u.cache_read_input_tokens)
-    next.lastAt = Date.now()
-  }
-  return next
-}
-
-// Brings the rows in line with what $.agent.list() says
-function merge(
-  list: AgentRow[],
-  infos: Array<{ id: string; description: string; type: string; status: string; parentId?: string; name?: string }>,
-): AgentRow[] {
-  let out = list
-  infos.forEach(info => {
-    const before = out.filter(row => row.id === info.id)[0]
-    const patch: Partial<AgentRow> = {
-      name: info.name || info.description || info.id.slice(0, 8),
-      type: info.type,
-      status: info.status,
-      parentId: info.parentId,
-    }
-    if (info.status !== 'running' && (!before || before.endedAt === undefined)) {
-      patch.endedAt = Date.now()
-    }
-    out = upsert(out, info.id, patch)
-  })
-  return out
-}
-
-// Drops every agent that is not running (the main session stays), and
-// remembers them so the sync does not bring them back
-function dismissFinished(list: AgentRow[]): AgentRow[] {
-  return list.filter(row => {
-    const keep = row.id === 'main' || row.status === 'running'
-    if (!keep) hidden[row.id] = true
-    return keep
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Presentation helpers
-// ---------------------------------------------------------------------------
-
-function seconds(ms: number): string {
-  const secs = Math.max(0, Math.round(num(ms) / 1000))
-  if (secs < 60) return secs + 's'
-  return Math.floor(secs / 60) + 'm' + String(secs % 60).padStart(2, '0') + 's'
-}
-
-function elapsed(row: AgentRow): string {
-  const end = row.endedAt === undefined ? Date.now() : row.endedAt
-  return seconds(end - row.startedAt)
-}
-
-function isDone(status: string): boolean {
-  return status === 'completed' || status === 'done'
-}
-
-function isFailed(status: string): boolean {
-  return status !== 'running' && status !== 'idle' && !isDone(status)
-}
-
-function statusWord(status: string): string {
-  if (isDone(status)) return 'done'
-  if (status === 'killed') return 'stopped'
-  if (status === 'failed') return 'failed'
-  return status
-}
-
-function marker(status: string): string {
-  if (status === 'running') return '●'
-  if (status === 'idle') return '○'
-  if (isDone(status)) return '✓'
-  return '✗'
-}
-
-function colorOf(status: string): string | undefined {
-  if (status === 'running') return 'cyan'
-  if (isDone(status)) return 'green'
-  if (status === 'idle') return undefined
-  return 'red'
-}
-
-// 1234 -> 1.2k, 56789 -> 57k, 1234567 -> 1.2M; anything unusable -> a dash
-function fmt(n: number): string {
-  if (typeof n !== 'number' || !isFinite(n)) return '–'
-  if (n < 1000) return String(Math.round(n))
-  if (n < 10000) return (n / 1000).toFixed(1) + 'k'
-  if (n < 1000000) return Math.round(n / 1000) + 'k'
-  return (n / 1000000).toFixed(1) + 'M'
-}
-
-// "in 12k · out 3.1k · total 15k", or dashes while nothing has been reported
-function tokenLine(tokIn: number, tokOut: number): string {
-  const i = num(tokIn)
-  const o = num(tokOut)
-  if (i + o === 0) return 'in – · out – · total –'
-  return 'in ' + fmt(i) + ' · out ' + fmt(o) + ' · total ' + fmt(i + o)
-}
-
-function money(usd: number): string {
-  return '$' + (usd < 10 ? usd.toFixed(2) : usd.toFixed(1))
-}
-
-function cut(text: string, width: number): string {
-  if (width <= 1) return ''
-  return text.length <= width ? text : text.slice(0, width - 1) + '…'
-}
-
-function two(n: number): string {
-  return n < 10 ? '0' + n : String(n)
-}
-
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-// Time left until a moment, as short as it can be: 2d3h, 1h42m, 7m
-function untilText(ms: number): string {
-  const mins = Math.max(0, Math.round(num(ms) / 60000))
-  if (mins >= 1440) return Math.floor(mins / 1440) + 'd' + Math.floor((mins % 1440) / 60) + 'h'
-  if (mins >= 60) return Math.floor(mins / 60) + 'h' + two(mins % 60) + 'm'
-  return mins + 'm'
-}
-
-// The local clock time of a moment: 6:30am, and the weekday when it is not today
-function clockText(at: number): string {
-  const d = new Date(at)
-  const h = d.getHours()
-  const time = (h % 12 === 0 ? 12 : h % 12) + ':' + two(d.getMinutes()) + (h < 12 ? 'am' : 'pm')
-  return d.toDateString() === new Date().toDateString() ? time : DAYS[d.getDay()] + ' ' + time
-}
-
-const LIMIT_NAMES: { [kind: string]: string } = { five_hour: '5h limit', seven_day: 'week limit', spend_limit: 'spend limit' }
-
-// What the last scan of every transcript on this machine put each usage window
-// at, in dollars at list prices. Worked out by scripts/window-cost.cjs, which
-// streams the files, so a transcript over the 4 MiB read limit counts too.
-const PLAN_COST_EVERY_MS = 60 * 1000
-const planCost: { usd: { [kind: string]: number }; at: number; running: boolean; error: string } = { usd: {}, at: 0, running: false, error: '' }
-
-// 14:05
-function clock(ms: number): string {
-  const d = new Date(ms)
-  return two(d.getHours()) + ':' + two(d.getMinutes())
-}
-
-// 20261007-140532, for file names
-function fileStamp(ms: number): string {
-  const d = new Date(ms)
-  return (
-    String(d.getFullYear()) +
-    two(d.getMonth() + 1) +
-    two(d.getDate()) +
-    '-' +
-    two(d.getHours()) +
-    two(d.getMinutes()) +
-    two(d.getSeconds())
-  )
-}
-
-// Claude Code does not report how far through its work an agent is, so a
-// running agent's progress is an estimate from its tool calls: quick at first,
-// flattening out, and held under 95% until the agent actually finishes.
-// Once two or more agents of the same type have finished, it uses how many
-// calls they averaged instead.
-function learnedCalls(row: AgentRow, history: StatsRow): number {
-  const entry = history[row.type]
-  return entry && entry.n >= 2 ? entry.calls / entry.n : 0
-}
-
-function progressOf(row: AgentRow, history: StatsRow): number {
-  if (isDone(row.status)) return 100
-  const expected = learnedCalls(row, history)
-  if (expected > 0) return Math.min(95, Math.round((100 * num(row.tools)) / Math.max(1, expected)))
-  return Math.min(95, Math.round(100 * (1 - Math.exp(-num(row.tools) / 10))))
-}
-
-function bar(percent: number, width: number): { filled: string; empty: string } {
-  const n = Math.max(0, Math.min(width, Math.round((num(percent) / 100) * width)))
-  return { filled: '█'.repeat(n), empty: '░'.repeat(width - n) }
-}
-
-// Parents first, each followed by its children, with the depth of each row
-function ordered(list: AgentRow[]): Array<{ row: AgentRow; depth: number }> {
-  const ids: { [id: string]: boolean } = {}
-  list.forEach(row => {
-    ids[row.id] = true
-  })
-  const out: Array<{ row: AgentRow; depth: number }> = []
-  const seen: { [id: string]: boolean } = {}
-  const walk = (row: AgentRow, depth: number) => {
-    if (seen[row.id]) return
-    seen[row.id] = true
-    out.push({ row, depth })
-    list.filter(child => child.parentId === row.id).forEach(child => walk(child, Math.min(depth + 1, 3)))
-  }
-  list
-    .filter(row => !row.parentId || !ids[row.parentId])
-    .sort((a, b) => (a.id === 'main' ? -1 : b.id === 'main' ? 1 : a.startedAt - b.startedAt))
-    .forEach(row => walk(row, 0))
-  list.forEach(row => walk(row, 0))
-  return out
-}
-
-// An agent's own tokens plus those of every agent it started
-function rollup(list: AgentRow[], row: AgentRow): { tokIn: number; tokOut: number; usd: number; kids: number } {
-  const total = { tokIn: num(row.tokIn), tokOut: num(row.tokOut), usd: num(row.usd), kids: 0 }
-  const seen: { [id: string]: boolean } = {}
-  seen[row.id] = true
-  const walk = (parent: string) => {
-    list
-      .filter(child => child.parentId === parent && !seen[child.id])
-      .forEach(child => {
-        seen[child.id] = true
-        total.tokIn += num(child.tokIn)
-        total.tokOut += num(child.tokOut)
-        total.usd += num(child.usd)
-        total.kids += 1
-        walk(child.id)
-      })
-  }
-  walk(row.id)
-  return total
-}
-
-// Does the search text appear in the agent's name, type, task, result or any
-// of its recent tool calls?
-function matches(row: AgentRow, query: string): boolean {
-  const q = query.trim().toLowerCase()
-  if (!q) return true
-  const hay = [row.name, row.type, row.task || '', row.result || '', row.last]
-    .concat(row.log.map(entry => entry.tool + ' ' + entry.detail))
-    .join('\n')
-    .toLowerCase()
-  return hay.indexOf(q) >= 0
-}
-
-function costText(usd: number | undefined): string {
-  return usd === undefined ? '–' : '~' + money(usd)
-}
-
-// ---------------------------------------------------------------------------
-// The report
-// ---------------------------------------------------------------------------
-
-function toolCounts(row: AgentRow): string {
-  const counts = row.byTool || {}
-  return Object.keys(counts)
-    .sort((a, b) => num(counts[b]) - num(counts[a]))
-    .map(tool => tool + ' ×' + counts[tool])
-    .join(' · ')
-}
-
-// One run as markdown: a table of its agents, then what each one did
-function runSection(rows: AgentRow[]): string[] {
-  const lines: string[] = []
-  const list = ordered(rows)
-  if (list.length === 0) return ['_No agent activity._', '']
-
-  lines.push('| Agent | Type | Status | Time | Calls | Errors | In | Out | Total | Cost |')
-  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
-  list.forEach(item => {
-    const row = item.row
-    const total = num(row.tokIn) + num(row.tokOut)
-    const status = row.id === 'main' ? row.status : statusWord(row.status)
-    lines.push(
-      '| ' +
-        [
-          '  '.repeat(item.depth) + row.name,
-          row.type + (row.model ? ' (' + row.model + ')' : ''),
-          status,
-          elapsed(row),
-          row.tools,
-          num(row.errors),
-          total ? fmt(row.tokIn) : '–',
-          total ? fmt(row.tokOut) : '–',
-          total ? fmt(total) : '–',
-          costText(row.usd),
-        ].join(' | ') +
-        ' |',
-    )
-  })
-  lines.push('')
-
-  list.forEach(item => {
-    const row = item.row
-    if (row.tools === 0 && !row.task && !row.result) return
-    const status = row.id === 'main' ? row.status : statusWord(row.status)
-    lines.push('### ' + row.name)
-    lines.push('_' + row.type + ' · ' + status + ' · ' + elapsed(row) + ' · ' + tokenLine(row.tokIn, row.tokOut) + '_')
-    lines.push('')
-    if (row.task) lines.push('**Task:** ' + row.task, '')
-    const counts = toolCounts(row)
-    if (counts) lines.push('**Tools:** ' + counts, '')
-    if (num(row.errors) > 0) lines.push('**Errors:** ' + row.errors + (row.lastError ? ' · last: ' + row.lastError : ''), '')
-    if (row.log.length > 0) {
-      lines.push('**Actions:**')
-      if (row.tools > row.log.length) lines.push('- … ' + (row.tools - row.log.length) + ' earlier calls not shown')
-      row.log.forEach(entry => {
-        lines.push('- `+' + seconds(entry.at) + '` **' + entry.tool + '**' + (entry.detail ? ' ' + entry.detail : ''))
-      })
-      lines.push('')
-    }
-    if (row.result) lines.push('**Result:** ' + row.result, '')
-  })
-  return lines
-}
-
-type RunStat = { at: number; prompt: string; agents: number; calls: number; tokens: number; usd: number; ms: number }
-
-function statOf(at: number, prompt: string, rows: AgentRow[]): RunStat {
-  let start = 0
-  let end = 0
-  const out = { at, prompt, agents: 0, calls: 0, tokens: 0, usd: 0, ms: 0 }
-  rows.forEach(row => {
-    if (row.id !== 'main') out.agents += 1
-    out.calls += num(row.tools)
-    out.tokens += num(row.tokIn) + num(row.tokOut)
-    out.usd += num(row.usd)
-    const rowEnd = row.endedAt === undefined ? row.startedAt : row.endedAt
-    if (start === 0 || row.startedAt < start) start = row.startedAt
-    if (rowEnd > end) end = rowEnd
-  })
-  out.ms = end > start ? end - start : 0
-  return out
-}
-
-// All runs side by side, newest first
-function comparison(rows: AgentRow[], history: RunRecord[], s: SessionRow): string[] {
-  const all: RunStat[] = [statOf(s.runAt || 0, s.runPrompt || '', rows)].concat(
-    history
-      .slice()
-      .reverse()
-      .map(record => statOf(record.at, record.prompt, record.agents)),
-  )
-  if (all.length < 2) return []
-  const lines = ['## Runs compared', '', '| Run | Prompt | Agents | Calls | Tokens | Cost | Duration |', '| --- | --- | --- | --- | --- | --- | --- |']
-  all.forEach((r, i) => {
-    lines.push(
-      '| ' +
-        [
-          i === 0 ? 'this run' : r.at ? clock(r.at) : '–',
-          r.prompt ? cut(r.prompt.replace(/\|/g, '/'), 40) : '–',
-          r.agents,
-          r.calls,
-          fmt(r.tokens),
-          r.usd > 0 ? '~' + money(r.usd) : '–',
-          r.ms > 0 ? seconds(r.ms) : '–',
-        ].join(' | ') +
-        ' |',
-    )
-  })
-  lines.push('')
-  return lines
-}
-
-function reportsDir(home: string | undefined, cwd: string): string {
-  return (home || cwd) + '/.claude/agent-reports'
-}
-
-function historyText(history: RunRecord[], learned: StatsRow): string {
-  return JSON.stringify({ runs: history, stats: learned })
-}
-
-function csvCell(value: unknown): string {
-  const text = String(value === undefined ? '' : value)
-  return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text
-}
-
-// Every agent of every run, one row each
-function buildCsv(rows: AgentRow[], history: RunRecord[], s: SessionRow): string {
-  const out = ['run,started,agent,type,model,status,seconds,calls,errors,tokens_in,tokens_out,tokens_total,est_usd']
-  const add = (label: string, at: number, list: AgentRow[]) => {
-    list.forEach(row => {
-      const end = row.endedAt === undefined ? Date.now() : row.endedAt
-      out.push(
-        [
-          label,
-          at ? new Date(at).toISOString() : '',
-          row.name,
-          row.type,
-          row.model || '',
-          row.status,
-          Math.round((end - row.startedAt) / 1000),
-          row.tools,
-          num(row.errors),
-          num(row.tokIn),
-          num(row.tokOut),
-          num(row.tokIn) + num(row.tokOut),
-          row.usd === undefined ? '' : row.usd.toFixed(4),
-        ]
-          .map(csvCell)
-          .join(','),
-      )
-    })
-  }
-  add('this run', s.runAt || 0, rows)
-  history
-    .slice()
-    .reverse()
-    .forEach((record, i) => add('earlier ' + (i + 1), record.at, record.agents))
-  return out.join('\n')
-}
-
-function buildJson(rows: AgentRow[], history: RunRecord[], s: SessionRow): string {
-  return JSON.stringify(
-    {
-      generated: new Date().toISOString(),
-      session: s,
-      runs: [{ at: s.runAt || 0, prompt: s.runPrompt || '', agents: rows }].concat(history.slice().reverse()),
-    },
-    null,
-    2,
-  )
-}
-
-function buildReport(rows: AgentRow[], history: RunRecord[], s: SessionRow): string {
-  const lines: string[] = ['# Agent report', '']
-  lines.push(
-    'Generated ' + clock(Date.now()) + (s.usd !== undefined ? ' · session cost ' + money(s.usd) : ''),
-    '',
-    'Session tokens: ' +
-      tokenLine(s.tokIn, s.tokOut) +
-      (num(s.tokCache) > 0 ? ' · cached ' + fmt(s.tokCache) : ''),
-    '',
-    '_Per-agent cost is an estimate from list prices; token counts come from ' +
-      num(s.usageSeen) +
-      ' of ' +
-      Math.max(num(s.steps), num(s.usageSeen)) +
-      ' model responses._',
-    '',
-  )
-  comparison(rows, history, s).forEach(line => lines.push(line))
-
-  lines.push('## This run' + (s.runAt ? ' · ' + clock(s.runAt) : ''), '')
-  if (s.runPrompt) lines.push('> ' + s.runPrompt, '')
-  runSection(rows).forEach(line => lines.push(line))
-
-  history
-    .slice()
-    .reverse()
-    .forEach(record => {
-      lines.push('## Earlier run' + (record.at ? ' · ' + clock(record.at) : ''), '')
-      if (record.prompt) lines.push('> ' + record.prompt, '')
-      runSection(record.agents).forEach(line => lines.push(line))
-    })
-
-  return lines.join('\n')
-}
-
-// ---------------------------------------------------------------------------
-// Other conversations: every session writes a transcript under
-// ~/.claude/projects, so its recent writes show which chats are working
-// ---------------------------------------------------------------------------
-
-type Convo = {
-  id: string
-  title: string
-  mtimeMs: number
-  mine: boolean
-  working: number
-  tools: number
-  lastTool: string
-}
-
-const CONVO_MAX_AGE_MS = 24 * 60 * 60 * 1000
-const CONVO_MAX_SHOWN = 12
-const CONVO_WORKING_MS = 45 * 1000
-const CONVO_TITLE_EVERY_MS = 30 * 1000
-
-let convos: Convo[] = []
-let lastConvoScan = 0
-let convoError = ''
-let convoScans = 0
-const convoTitles: Record<string, { title: string; size: number; at: number; tools: number; lastTool: string }> = {}
-
-// A session the agents panel lists, read from ~/.claude/sessions and, for a
-// background job, ~/.claude/jobs/<id>/state.json
-type Live = {
-  id: string
-  // The process id: the session file is named for it
-  pid: number
-  name: string
-  cwd: string
-  kind: string
-  busy: boolean
-  startedAt: number
-  since: number
-  detail: string
-  tokens: number
-  tasks: number
-  // A pre-warmed background worker nobody has given work, and a helper that
-  // waits for a Remote Control prompt: neither has a transcript to read
-  spare: boolean
-  remote: boolean
-  // The name of the background job this chat handed its work to, if it did.
-  // The chat keeps the status it had when it handed off, so it must not count
-  // as working.
-  handedTo: string
-  // The background job this session is, when it is one: `claude attach` takes it
-  jobId: string
-  // What a background job says it is waiting on (its state.json `needs`), or empty
-  needs: string
-}
-
-let liveSessions: Live[] = []
-let liveMine = ''
-
-// What a chat's latest model request says about its prompt cache, read from
-// its transcript. `ttlMs` is the lifetime the request's cache write used (1 hour
-// or 5 minutes); `ttlKnown` is false when no recent write says, and the
-// five-minute default stands in.
-type CacheInfo = {
-  ctxTokens: number
-  read: number
-  wrote: number
-  fresh: number
-  hitPct: number
-  lastAt: number
-  ttlMs: number
-  ttlKnown: boolean
-}
-
-type LiveExtra = {
-  tools: number
-  lastTool: string
-  subs: number
-  at: number
-  note: string
-  tokIn: number
-  tokOut: number
-  usd: number
-  // Tool calls since the latest prompt: the progress estimate counts from it
-  turnTools: number
-  // Transcript size when last read: an unchanged file is not read again
-  size: number
-  // Whether the transcript file exists at all
-  exists: boolean
-  // Over the read limit: the size scripts/big-transcript.cjs last read from the
-  // end of the file, and why it could not, if it could not
-  bigSize?: number
-  bigError?: string
-  // Lifetime tool calls counted so far in a big transcript, and the byte offset
-  // that count covers: the next read counts only what was added after it
-  bigToolsAt?: number
-  // The latest prompt typed in the chat, cut short
-  lastPrompt?: string
-  // When the transcript file last changed: a chat whose session file still says
-  // idle (a background job's does) is working if its transcript is being written
-  mtimeMs?: number
-  cache?: CacheInfo
-}
-
-const liveExtra: Record<string, LiveExtra> = {}
-
-// Whether a window was found for a chat the last time it was looked for: a chat
-// whose terminal was closed, or a job nothing is showing, has none to raise
-const focusProbe: Record<string, { ok: boolean; at: number }> = {}
-
-// Working: the session file says so, or the transcript changed a moment ago. A
-// chat that handed its work to a background job is not, whatever it last said.
-const isBusy = (l: Live, now: number): boolean => {
-  if (l.handedTo !== '') return false
-  if (l.busy) return true
-  const changed = liveExtra[l.id]?.mtimeMs ?? 0
-  return changed > 0 && now - changed < CONVO_WORKING_MS
-}
-
-const subsOf = (id: string): number => liveExtra[id]?.subs ?? 0
-const usdOf = (id: string): number => liveExtra[id]?.usd ?? 0
-
-const CACHE_TTL_1H_MS = 60 * 60 * 1000
-const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
-const CACHE_LOOKBACK = 400
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-
-const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-
-const parseJson = (text: unknown): Record<string, unknown> | undefined => {
-  try {
-    const parsed: unknown = JSON.parse(String(text))
-    return isRecord(parsed) ? parsed : undefined
-  } catch {
-    return undefined
-  }
-}
-
-const toolStats = (text: string): { tools: number; lastTool: string } => {
-  const mark = '"type":"tool_use"'
-  const tools = text.split(mark).length - 1
-  const at = text.lastIndexOf(mark)
-  if (at < 0) return { tools: 0, lastTool: '' }
-  const after = text.slice(at, at + 400)
-  const found = after.match(/"name":"([^"]*)"/)
-  return { tools, lastTool: found ? str(found[1]) : '' }
-}
-
-// The latest prompt the person typed, for the chat details: the last user line
-// that is not a tool result. A slash command reads as the command and its
-// arguments; reminders and tags are dropped. Shown, never logged or stored.
-const promptText = (entry: Record<string, unknown>): string => {
-  const message = isRecord(entry.message) ? entry.message : undefined
-  if (!message || entry.isMeta === true) return ''
-  const content = message.content
-  const raw =
-    typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content.map(block => (isRecord(block) && block.type === 'text' ? str(block.text) : '')).join(' ')
-        : ''
-  const command = /<command-name>([^<]*)<\/command-name>/.exec(raw)
-  const args = /<command-args>([^<]*)<\/command-args>/.exec(raw)
-  if (command) return ((command[1] || '') + ' ' + (args ? args[1] || '' : '')).trim()
-  return raw
-    .replace(/<(system-reminder|local-command-caveat|local-command-stdout)>[\s\S]*?<\/\1>/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300)
-}
-
-const latestPrompt = (text: string): string => {
-  const lines = text.split(String.fromCharCode(10))
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i] || ''
-    if (line.indexOf('"type":"user"') < 0 || line.indexOf('tool_result') >= 0 || line.length > 200000) continue
-    const entry = parseJson(line)
-    const said = entry ? promptText(entry) : ''
-    if (said) return said
-  }
-  return ''
-}
-
-// Tool calls made since the latest prompt the person typed: a prompt is a user
-// line that is not a tool result. Walks back from the end and stops there.
-const turnTools = (text: string): number => {
-  const lines = text.split(String.fromCharCode(10))
-  let count = 0
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i] || ''
-    if (line.indexOf('"type":"user"') >= 0 && line.indexOf('tool_result') < 0) break
-    count += line.split('"type":"tool_use"').length - 1
-  }
-  return count
-}
-
-// Progress of a chat's current turn, from its tool calls: the same curve a
-// subagent uses before it has history, held under 95%
-const turnProgress = (calls: number): number => Math.min(95, Math.round(100 * (1 - Math.exp(-num(calls) / 10))))
-
-// Tokens and estimated cost for a whole transcript, summed from each reply's
-// usage block. A reply can be written to the file more than once while it
-// streams, so the last usage seen for each message id is the one counted.
-const usageStats = (text: string): { tokIn: number; tokOut: number; usd: number } => {
-  const byMessage: Record<string, { model: string; usage: Usage }> = {}
-  const lines = text.split(String.fromCharCode(10))
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] || ''
-    if (line.indexOf('"usage"') < 0) continue
-    const entry = parseJson(line)
-    const message = entry && isRecord(entry.message) ? entry.message : undefined
-    if (!message || !isRecord(message.usage)) continue
-    const u = message.usage
-    byMessage[str(message.id) || 'line-' + i] = {
-      model: str(message.model),
-      usage: {
-        input_tokens: num(u.input_tokens),
-        output_tokens: num(u.output_tokens),
-        cache_read_input_tokens: num(u.cache_read_input_tokens),
-        cache_creation_input_tokens: num(u.cache_creation_input_tokens),
-      },
-    }
-  }
-  const total = { tokIn: 0, tokOut: 0, usd: 0 }
-  Object.keys(byMessage).forEach(key => {
-    const entry = byMessage[key]
-    if (!entry) return
-    const { model, usage } = entry
-    total.tokIn += num(usage.input_tokens) + num(usage.cache_creation_input_tokens)
-    total.tokOut += num(usage.output_tokens)
-    total.usd += costOf(model, usage)
-  })
-  return total
-}
-
-// The prompt cache as of a transcript's latest model request, walking back
-// from the end. The lifetime comes from the newest request that wrote to the
-// cache: its `cache_creation` block splits the write into 1 hour and 5 minute
-// entries. A request that only read the cache says nothing about it.
-const cacheStats = (text: string): CacheInfo | undefined => {
-  const lines = text.split(String.fromCharCode(10))
-  let info: CacheInfo | undefined
-  let ttlMs = 0
-  let seen = 0
-  for (let i = lines.length - 1; i >= 0 && seen < CACHE_LOOKBACK; i -= 1) {
-    const line = lines[i] || ''
-    if (line.indexOf('"usage"') < 0) continue
-    const entry = parseJson(line)
-    const message = entry && isRecord(entry.message) ? entry.message : undefined
-    if (!entry || !message || !isRecord(message.usage)) continue
-    seen += 1
-    const u = message.usage
-    if (!info) {
-      const at = Date.parse(str(entry.timestamp))
-      if (isFinite(at)) {
-        const read = num(u.cache_read_input_tokens)
-        const wrote = num(u.cache_creation_input_tokens)
-        const fresh = num(u.input_tokens)
-        const total = read + wrote + fresh
-        if (total > 0) {
-          info = {
-            ctxTokens: total,
-            read,
-            wrote,
-            fresh,
-            hitPct: Math.round((read / total) * 100),
-            lastAt: at,
-            ttlMs: CACHE_TTL_MS,
-            ttlKnown: false,
-          }
-        }
-      }
-    }
-    if (ttlMs === 0 && isRecord(u.cache_creation)) {
-      if (num(u.cache_creation.ephemeral_1h_input_tokens) > 0) ttlMs = CACHE_TTL_1H_MS
-      else if (num(u.cache_creation.ephemeral_5m_input_tokens) > 0) ttlMs = CACHE_TTL_MS
-    }
-    if (info && ttlMs > 0) break
-  }
-  if (info && ttlMs > 0) {
-    info.ttlMs = ttlMs
-    info.ttlKnown = true
-  }
-  return info
-}
-
-// How long the cache of the chat this pane runs in lasts: what its transcript
-// shows, else the five-minute default
-const mainTtlMs = (): number => {
-  const own = liveMine ? liveExtra[liveMine] : undefined
-  return own && own.cache && own.cache.ttlKnown ? own.cache.ttlMs : CACHE_TTL_MS
-}
-
-const ttlLabel = (ttlMs: number, known: boolean): string => (ttlMs >= CACHE_TTL_1H_MS ? '1h' : '5m') + (known ? '' : '?')
-
-// What a session is doing right now, for chats that have no job file: the
-// first line of its latest reply, else its latest tool call
-const latestNote = (text: string): string => {
-  const lines = text.split(String.fromCharCode(10))
-  for (let i = lines.length - 1; i >= 0 && i >= lines.length - 60; i -= 1) {
-    const line = lines[i] || ''
-    if (line.indexOf('"type":"assistant"') < 0) continue
-    const entry = parseJson(line)
-    const message = entry && isRecord(entry.message) ? entry.message : undefined
-    const content = message && Array.isArray(message.content) ? message.content : []
-    for (let j = content.length - 1; j >= 0; j -= 1) {
-      const block: unknown = content[j]
-      if (!isRecord(block)) continue
-      if (block.type === 'text' && str(block.text).trim()) return str(block.text).trim().split(String.fromCharCode(10))[0] || ''
-      if (block.type === 'tool_use') {
-        const input = isRecord(block.input) ? block.input : {}
-        const arg = str(input.description) || str(input.command) || str(input.file_path) || str(input.pattern) || str(input.url)
-        return str(block.name) + (arg ? ': ' + arg : '')
-      }
-    }
-  }
-  return ''
-}
-
-const projectLabel = (dir: string): string => {
-  const parts = dir.split('-').filter(part => part.length > 0)
-  return parts.length > 0 ? str(parts[parts.length - 1]) : dir
-}
-
-const titleFrom = (text: string): string | undefined => {
-  const key = '"aiTitle":'
-  const at = text.lastIndexOf(key)
-  if (at < 0) return undefined
-  const end = text.indexOf(String.fromCharCode(10), at)
-  const line = text.slice(at + key.length, end < 0 ? undefined : end)
-  const close = line.indexOf(',"sessionId"')
-  try {
-    const parsed: unknown = JSON.parse(close < 0 ? line.replace(/}\s*$/, '') : line.slice(0, close))
-    return typeof parsed === 'string' ? parsed : undefined
-  } catch {
-    return undefined
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Hooks
-// ---------------------------------------------------------------------------
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -995,8 +46,8 @@ export const register: Register = on => {
 
     // Earlier runs and what they taught about each agent type, saved by a
     // previous session
-    if (!historyLoaded) {
-      historyLoaded = true
+    if (!flags.historyLoaded) {
+      flags.historyLoaded = true
       try {
         const home = await $.env.get('HOME')
         const text = await $.fs.read(reportsDir(home, await $.session.cwd()) + '/history.json')
@@ -1124,7 +175,7 @@ export const register: Register = on => {
     let probing = false
     const probeFocus = async (): Promise<void> => {
       if (probing) return
-      const eligible = liveSessions.filter(l => !l.spare && l.pid > 0)
+      const eligible = live.sessions.filter(l => !l.spare && l.pid > 0)
       if (!eligible.some(l => Date.now() - (focusProbe[l.id]?.at ?? 0) > 30000)) return
       probing = true
       let results: Record<string, unknown> | undefined
@@ -1153,10 +204,10 @@ export const register: Register = on => {
       if (scanning) return
       scanning = true
       try {
-        convoScans += 1
+        live.scans += 1
         const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
         if (!home) {
-          convoError = 'no HOME or USERPROFILE'
+          live.convoError = 'no HOME or USERPROFILE'
           return
         }
         const myId = await $.session.id()
@@ -1197,9 +248,9 @@ export const register: Register = on => {
             handedTo: parkedId === '' ? '' : (parked ? str(parked.name) : '') || parkedId,
           })
         }
-        liveSessions = rows
-        liveMine = myId
-        convoError = ''
+        live.sessions = rows
+        live.mine = myId
+        live.convoError = ''
 
         // Every session's transcript: tool calls, tokens, cost and the prompt
         // cache. A busy session is looked at every 5 seconds, an idle one every
@@ -1265,7 +316,7 @@ export const register: Register = on => {
         if (bigDue.length > 0) void refreshBig(bigDue)
         void probeFocus()
       } catch (err) {
-        convoError = String(err)
+        live.convoError = String(err)
       } finally {
         scanning = false
       }
@@ -1275,10 +326,10 @@ export const register: Register = on => {
     // and redraw so run times and the cache countdown tick
     $.clock.every(1000, async () => {
       const infos = await $.agent.list()
-      if (!seeded) {
+      if (!flags.seeded) {
         // Agents that had already finished before this mod loaded belong to
         // an earlier run: keep them out
-        seeded = true
+        flags.seeded = true
         infos.forEach(info => {
           if (info.status !== 'running') hidden[info.id] = true
         })
@@ -1456,8 +507,10 @@ export const register: Register = on => {
 
   // Every tool call, attributed to the loop it ran in
   on('tool.call', async ($, e, next) => {
-    // A subagent's report back to its parent is not work it did
-    if (e.tool === 'SubagentHandback') return next(e)
+    // A subagent's report back to its parent is not work it did. The engine's
+    // tool typings do not list the tool, so the name is compared as a string.
+    const toolName: string = e.tool
+    if (toolName === 'SubagentHandback') return next(e)
     // Claude Code's own helpers (the prompt suggestion, for one) tag tool calls
     // with an agent id that was never spawned as an agent: leave those alone
     if (e.agentId) {
@@ -1646,7 +699,7 @@ export const register: Register = on => {
     const cached = num(s.tokCache) > 0 ? ' · cached ' + fmt(s.tokCache) : ''
 
     // Named like the "Cache by chat" rows: the figures below are this chat's own
-    const mine = liveSessions.filter(l => l.id === liveMine)[0]
+    const mine = live.sessions.filter(l => l.id === live.mine)[0]
     const sessionHeading = 'This session' + (mine ? ' · ' + mine.name : '')
 
     const summary = [
@@ -1771,7 +824,7 @@ export const register: Register = on => {
       )
 
       const ttlMs = mainTtlMs()
-      const own = liveExtra[liveMine]
+      const own = liveExtra[live.mine]
       const ownCache = own ? own.cache : undefined
       const ttlText = ttlLabel(ttlMs, ownCache !== undefined && ownCache.ttlKnown)
       const age = s.lastAt ? Date.now() - s.lastAt : ttlMs
@@ -2080,7 +1133,7 @@ export const register: Register = on => {
     const renderNow = Date.now()
     // This chat is the "This session" block above, and its subagents the Agents
     // list: the sections below cover the other chats only, so nothing is counted twice
-    const others = liveSessions.filter(l => l.id !== liveMine)
+    const others = live.sessions.filter(l => l.id !== live.mine)
     const busy = others.filter(l => isBusy(l, renderNow)).sort((a, b) => a.since - b.since)
     const idle = others.length - busy.length
     const subCount = (l: Live): number => Math.max(l.tasks, subsOf(l.id))
@@ -2413,7 +1466,7 @@ export const register: Register = on => {
         liveRows.length > 0 ? liveRows : [Text({ dimColor: true, children: ['nothing else working (' + others.length + ' other sessions found)'] })],
         idleSection.length > 0 ? [Text({ children: [' '] })] : [],
         idleSection,
-        convoError ? [Text({ color: 'red', wrap: 'wrap', children: ['scan problem: ' + convoError] })] : [],
+        live.convoError ? [Text({ color: 'red', wrap: 'wrap', children: ['scan problem: ' + live.convoError] })] : [],
       ),
     })
 

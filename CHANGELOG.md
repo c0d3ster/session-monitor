@@ -6,6 +6,10 @@ Bump the version in `plugin.json`, add an entry here, then `claude plugin update
 
 ## Unreleased
 
+Changed
+
+- `hooks/register.ts` is split into modules (`rows`, `report`, `transcripts`, `format`, `util`, `constants`, `limits`, `state`). It went from 2,449 to about 1,500 lines. No change to what the pane shows. Unused leftovers from the old conversation scan were removed.
+
 Fixed
 
 - A subagent's hand-back to its parent (the `SubagentHandback` tool call) is no longer counted as a tool call, so each subagent's call count was one too high.
