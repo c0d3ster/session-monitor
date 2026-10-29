@@ -8,7 +8,7 @@ Bump the version in `plugin.json`, add an entry here, then `claude plugin update
 
 Changed
 
-- `Show:` (the filter) and `Clear finished` moved from the footer into the Agents section, under its heading, since both only act on the agents list. `Clear finished` shows only when there is a finished agent to clear. The `f` and `c` hotkeys are unchanged.
+- `Show:` (the filter) and `Clear finished` moved from the footer to a line under the agent rows, since both only act on the agents list. The line appears only when there are agents, and `Clear finished` only when one has finished. The `f` and `c` hotkeys are unchanged.
 - `hooks/register.ts` is split into modules (`rows`, `report`, `transcripts`, `format`, `util`, `constants`, `limits`, `state`). It went from 2,449 to about 1,500 lines. No change to what the pane shows. Unused leftovers from the old conversation scan were removed.
 
 Fixed

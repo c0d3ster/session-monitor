@@ -702,8 +702,8 @@ export const register: Register = on => {
     const mine = live.sessions.filter(l => l.id === live.mine)[0]
     const sessionHeading = 'This session' + (mine ? ' · ' + mine.name : '')
 
-    // The agents section's own controls: the filter, and clearing finished agents
-    // when there are any. Both act on the agents list only.
+    // The agents section's own controls, drawn under the agent rows and only when
+    // there are agents: the filter, and clearing finished agents when there are any.
     const clearable = subs.length - running > 0
     const agentControls = Box({
       flexDirection: 'row',
@@ -759,7 +759,6 @@ export const register: Register = on => {
           Text({ children: [s.usd !== undefined ? 'session ' + money(s.usd) : ''] }),
         ],
       }),
-      agentControls,
       Text({ dimColor: true, children: ['session ' + sessionTokens + cached] }),
     ]
 
@@ -1503,6 +1502,7 @@ export const register: Register = on => {
         attention,
         subs.length > 0 ? search : [],
         [Box({ flexDirection: 'column', rowGap: 1, children: body })],
+        subs.length > 0 ? [agentControls] : [],
         agentsOnly ? [] : [convoSection],
         noUsage
           ? [Text({ color: 'yellow', children: [cut('⚠ model responses carry no token counts in this build', cols)] })]

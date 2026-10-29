@@ -272,7 +272,7 @@ test('a subagent handing its report back is not counted as a tool call', async (
   await ui.unmount()
 })
 
-test('Show and Clear finished sit in the agents section, and Clear appears once an agent is done', async ($, on) => {
+test('Show and Clear finished sit under the agents, only when there are agents, and Clear appears once one is done', async ($, on) => {
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
   on('tool.call', () => ({ result: 'ok' }))
   on('turn.complete', () => ({ text: '' }))
@@ -296,5 +296,7 @@ test('Show and Clear finished sit in the agents section, and Clear appears once 
   await ui.press({ key: 'clear' })
   expect((await ui.find({ key: 'open-agent-1' })) === undefined).toBe(true)
   expect((await ui.find({ key: 'clear' })) === undefined).toBe(true)
+  // No agents left, so no Show either
+  expect((await ui.find({ key: 'filter' })) === undefined).toBe(true)
   await ui.unmount()
 })
