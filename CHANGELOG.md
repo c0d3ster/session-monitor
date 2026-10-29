@@ -1,19 +1,8 @@
 # Changelog
 
-All notable changes to agent-monitor. Newest first. Versions follow `.claude-plugin/plugin.json`.
+All notable changes to session-monitor (called agent-monitor until 0.2.0). Newest first. Versions follow `.claude-plugin/plugin.json`.
 
-Bump the version in `plugin.json`, add an entry here, then `claude plugin update agent-monitor@my-mods`.
-
-## Unreleased
-
-Changed
-
-- `Show:` (the filter) and `Clear finished` moved from the footer to a line under the agent rows, since both only act on the agents list. The line appears only when there are agents, and `Clear finished` only when one has finished. The `f` and `c` hotkeys are unchanged.
-- `hooks/register.ts` is split into modules (`rows`, `report`, `transcripts`, `format`, `util`, `constants`, `limits`, `state`). It went from 2,449 to about 1,500 lines. No change to what the pane shows. Unused leftovers from the old conversation scan were removed.
-
-Fixed
-
-- A subagent's hand-back to its parent (the `SubagentHandback` tool call) is no longer counted as a tool call, so each subagent's call count was one too high.
+From the next release on, this file and the version in `plugin.json` are written by release-please from the commit messages (see the release PR it opens). Entries below were written by hand.
 
 ## 0.2.1 - 2026-10-26
 
