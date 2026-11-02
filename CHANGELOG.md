@@ -4,6 +4,25 @@ All notable changes to session-monitor (called agent-monitor until 0.2.0). Newes
 
 From the next release on, this file and the version in `plugin.json` are written by release-please from the commit messages (see the release PR it opens). Entries below were written by hand.
 
+## [0.3.0](https://github.com/c0d3ster/session-monitor/compare/session-monitor-v0.2.1...session-monitor-v0.3.0) (2026-11-02)
+
+
+### Features
+
+* initial import of session-monitor 0.2.0 ([11997d6](https://github.com/c0d3ster/session-monitor/commit/11997d6f9f3e8315c8c2bb8af1b9f58763614dd9))
+* move Show and Clear finished into the agents section ([82aba2d](https://github.com/c0d3ster/session-monitor/commit/82aba2de7754b095b034d4b7f0383e9d13914af0))
+* put Show and Clear finished under the agent rows, only when there are agents ([f61d1bd](https://github.com/c0d3ster/session-monitor/commit/f61d1bd1b27e362219fed381f675a23db6502d8a))
+
+
+### Bug Fixes
+
+* do not count SubagentHandback as a tool call ([c95286f](https://github.com/c0d3ster/session-monitor/commit/c95286fa26dbc95295ec422906ec05bcd3615f2a))
+
+
+### Refactoring
+
+* split register.ts into modules ([c32eed1](https://github.com/c0d3ster/session-monitor/commit/c32eed1f663d5ba64c767ab77cd4300e3ce51759))
+
 ## 0.2.1 - 2026-10-26
 
 Changed
