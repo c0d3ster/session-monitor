@@ -7,7 +7,7 @@ import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
-import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withSteps } from './rows'
+import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
 import { cacheStats, focusProbe, isBusy, latestNote, latestPrompt, live, liveExtra, mainTtlMs, subsOf, toolStats, ttlLabel, turnProgress, turnTools, usageStats, usdOf } from './transcripts'
 import { isRecord, num, oneLine, parseJson, str } from './util'
@@ -1059,6 +1059,7 @@ export const register: Register = on => {
       if (row.status === 'running') {
         // A running agent gets a progress bar and what it is doing right now
         const pct = progressOf(row, learned)
+        const reported = hasSteps(row)
         const meter = bar(pct, barWidth)
         lines.push(
           Box({
@@ -1068,11 +1069,16 @@ export const register: Register = on => {
               Text({ children: ['  '] }),
               Text({ color, children: [meter.filled] }),
               Text({ dimColor: true, children: [meter.empty] }),
-              Text({ children: ['~' + pct + '%'] }),
+              // Reported steps are real, so they carry no tilde; the estimate does
+              Text({ children: [(reported ? '' : '~') + pct + '%'] }),
+              ...(reported ? [Text({ children: [num(row.stepDone) + '/' + num(row.stepTotal) + ' steps'] })] : []),
               Text({ dimColor: true, children: [calls] }),
             ],
           }),
         )
+        if (reported && row.stepNote) {
+          lines.push(Text({ dimColor: true, children: [cut('  now: ' + row.stepNote, room)] }))
+        }
         lines.push(Text({ dimColor: true, children: [cut('  ' + tokenCost(row), room)] }))
         if (row.last) {
           lines.push(Text({ dimColor: true, children: ['  ↳ ' + cut(row.last, room - 4)] }))

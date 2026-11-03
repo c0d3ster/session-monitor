@@ -337,3 +337,39 @@ test('a step report is not counted as a tool call', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /2 calls/ })) === undefined).toBe(true)
   await ui.unmount()
 })
+
+test('an agent that reports steps shows a real bar, and one that does not keeps the estimate', async ($, on) => {
+  let n = 0
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
+  on('tool.call', () => ({ result: 'ok' }))
+
+  await $.agent.spawn(spawnInput('refactor the parser', 'refactor parser', 'general-purpose'))
+  await $.agent.spawn(spawnInput('write the docs', 'write docs', 'general-purpose'))
+  await $.tool.call(stepCall({ done: 2, total: 5, note: 'reading the parser', agentId: 'agent-1' }))
+
+  const ui = await $.ui.mount(PANE)
+  // Reported: no tilde, the step count, and the step in progress
+  expect((await ui.find({ type: 'Text', text: /^40%$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /^2\/5 steps$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /now: reading the parser/ })) === undefined).toBe(false)
+  // Not reported: the estimate, marked with a tilde
+  expect((await ui.find({ type: 'Text', text: /^~\d+%$/ })) === undefined).toBe(false)
+  await ui.unmount()
+})
+
+test('reported progress stops short of 100% until the agent finishes', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.agent.spawn(spawnInput('refactor the parser', 'refactor parser', 'general-purpose'))
+  await $.tool.call(stepCall({ done: 5, total: 5, agentId: 'agent-1' }))
+
+  let ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^99%$/ })) === undefined).toBe(false)
+  await ui.unmount()
+
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'turn-1', agentId: 'agent-1', reason: 'answer' })
+  ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^99%$/ })) === undefined).toBe(true)
+  await ui.unmount()
+})
