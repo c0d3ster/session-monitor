@@ -9,6 +9,9 @@ export const WARN_CACHE_MS = 60 * 1000
 export const MAX_REPORT_VIEW = 9500
 export const ORPHAN_MS = 20 * 1000
 
+// The tool workers call to report their own steps, named as the model sees it
+export const STEP_TOOL = 'mcp__session-monitor__step'
+
 // The prompt cache keeps an entry for about five minutes after its last use,
 // and every request that reads it starts the five minutes again. Claude Code
 // does not report the real lifetime, so the countdown assumes five minutes.

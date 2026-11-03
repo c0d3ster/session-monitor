@@ -300,3 +300,40 @@ test('Show and Clear finished sit under the agents, only when there are agents, 
   expect((await ui.find({ key: 'filter' })) === undefined).toBe(true)
   await ui.unmount()
 })
+
+// Not in the engine's tool typings (it is this plugin's own), so the calls go in as `never`
+const stepCall = (fields: { done: number; total?: number; note?: string; agentId?: string }): never =>
+  Object.assign({ tool: 'mcp__session-monitor__step' }, fields) as never
+
+test('a worker reports its steps and gets an acknowledgement', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.agent.spawn(spawnInput('refactor the parser', 'refactor parser', 'general-purpose'))
+
+  const first = await $.tool.call(stepCall({ done: 0, total: 5, note: 'reading the parser', agentId: 'agent-1' }))
+  expect(String(first.result)).toBe('ok: 0/5')
+  // total is kept when a later report leaves it out, and done cannot pass it
+  const later = await $.tool.call(stepCall({ done: 9, agentId: 'agent-1' }))
+  expect(String(later.result)).toBe('ok: 5/5')
+})
+
+test('a step report from the main session or an unknown agent changes nothing', async ($, on) => {
+  on('tool.call', () => ({ result: 'unhandled' }))
+  const main = await $.tool.call(stepCall({ done: 1, total: 3 }))
+  expect(String(main.result).startsWith('ignored')).toBe(true)
+  const stranger = await $.tool.call(stepCall({ done: 1, total: 3, agentId: 'nobody' }))
+  expect(String(stranger.result).startsWith('ignored')).toBe(true)
+})
+
+test('a step report is not counted as a tool call', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.agent.spawn(spawnInput('look around', 'map the repo', 'general-purpose'))
+  await $.tool.call(taggedCall({ tool: 'Grep', pattern: 'TODO', agentId: 'agent-1' }))
+  await $.tool.call(stepCall({ done: 1, total: 2, agentId: 'agent-1' }))
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /1 calls?\b/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /2 calls/ })) === undefined).toBe(true)
+  await ui.unmount()
+})

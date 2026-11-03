@@ -48,6 +48,7 @@ Copy the folder somewhere permanent (for example `~/mods/agent-monitor`) and add
 - Each running agent: run time, a progress bar with `~%`, tool calls, tokens (in, out, total; dashes until the first response is reported), and its latest tool call. Finished agents show two quiet lines.
 - Press an agent's name (Tab to it, Enter) to open what it did: its task, its recent tool calls with timestamps, and the result it reported back.
 - A new prompt starts a new run: agents that finished in earlier runs are cleared automatically. `c` clears them on demand.
+- Step tool: the mod adds `mcp__session-monitor__step` (`done`, `total`, `note`) so a subagent can report its own steps. Only a subagent's call counts; the main session's is ignored, and a step report is not counted as a tool call. The pane does not draw the steps yet.
 - Progress is an estimate. Claude Code doesn't report how far through its work an agent is, so the bar is derived from tool calls and held under 95% until the agent finishes.
 
 - Cache gauge: a hit-rate bar (green ≥70%, yellow ≥40%, red below) and a time-left bar for the prompt cache, counting down from the main session's last request. The lifetime (5 minutes or 1 hour) is read from the chat's transcript, from the newest request that wrote to the cache; with none to go on it assumes 5 minutes and shows `5m?`. When it hits zero the pane says the next request rebuilds the cache.

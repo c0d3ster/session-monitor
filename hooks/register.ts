@@ -3,11 +3,11 @@ import type { Register } from 'claude-code'
 
 import type { AgentRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
-import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, PANE, SHOW_LOG, WARN_CACHE_MS } from './constants'
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, PANE, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
-import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, isDone, isFailed, marker, matches, merge, ordered, progressOf, rollup, statusWord, summarize, upsert } from './rows'
+import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
 import { cacheStats, focusProbe, isBusy, latestNote, latestPrompt, live, liveExtra, mainTtlMs, subsOf, toolStats, ttlLabel, turnProgress, turnTools, usageStats, usdOf } from './transcripts'
 import { isRecord, num, oneLine, parseJson, str } from './util'
@@ -42,6 +42,27 @@ export const register: Register = on => {
       name: 'agent-report',
       description: 'Open a report on what the agents did',
       immediate: true,
+    })
+
+    // Lets a worker report its own steps, so the pane can show real progress
+    // instead of an estimate. In every agent's tool list, not behind ToolSearch:
+    // a worker does not go looking for it.
+    await $.tool.register({
+      name: 'step',
+      description:
+        'Report your own progress to the session monitor. Right after reading your brief, call it with `total` ' +
+        '(your plan in 3 to 8 steps) and `done: 0`; call it again as each step finishes. ' +
+        'Cheap and silent: it only updates a progress bar.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          done: { type: 'integer', minimum: 0, description: 'Steps finished so far.' },
+          total: { type: 'integer', minimum: 1, description: 'Steps planned; may change if the plan changes.' },
+          note: { type: 'string', description: 'The step in progress, a few words.' },
+        },
+        required: ['done'],
+      },
+      isDeferred: false,
     })
 
     // Earlier runs and what they taught about each agent type, saved by a
@@ -505,12 +526,31 @@ export const register: Register = on => {
     return result
   }).catch(async ($, e, next) => next(e))
 
+  // A worker's own step report. The call runs in the worker's loop, so agentId
+  // names the row; the main session has none and changes nothing.
+  on('tool.call', { tool: STEP_TOOL }, async ($, e) => {
+    const agentId = e.agentId
+    if (!agentId) return { result: 'ignored: only subagents report steps' }
+    const report = readStepReport(e as unknown as Record<string, unknown>)
+    // Holder object: the update callback runs later, so a plain `let` would be
+    // narrowed to undefined after it
+    const found: { row?: AgentRow } = {}
+    await update($, agents, list => {
+      const next = withSteps(list, agentId, report)
+      if (next) found.row = next.filter(row => row.id === agentId)[0]
+      return next || list
+    })
+    if (!found.row) return { result: 'ignored: no row for agent ' + agentId }
+    return { result: 'ok: ' + num(found.row.stepDone) + '/' + num(found.row.stepTotal) }
+  })
+
   // Every tool call, attributed to the loop it ran in
   on('tool.call', async ($, e, next) => {
-    // A subagent's report back to its parent is not work it did. The engine's
-    // tool typings do not list the tool, so the name is compared as a string.
+    // A subagent's report back to its parent, and a step report, are not work
+    // the agent did. The engine's tool typings do not list SubagentHandback,
+    // so the name is compared as a string.
     const toolName: string = e.tool
-    if (toolName === 'SubagentHandback') return next(e)
+    if (toolName === 'SubagentHandback' || toolName === STEP_TOOL) return next(e)
     // Claude Code's own helpers (the prompt suggestion, for one) tag tool calls
     // with an agent id that was never spawned as an agent: leave those alone
     if (e.agentId) {
