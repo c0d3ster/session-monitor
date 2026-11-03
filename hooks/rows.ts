@@ -236,8 +236,16 @@ export function learnedCalls(row: AgentRow, history: StatsRow): number {
   return entry && entry.n >= 2 ? entry.calls / entry.n : 0
 }
 
+// True once the agent has reported a plan through the step tool
+export function hasSteps(row: AgentRow): boolean {
+  return num(row.stepTotal) > 0
+}
+
+// An agent that reports its own steps shows those, held under 100% until it
+// finishes; one that does not keeps the estimate.
 export function progressOf(row: AgentRow, history: StatsRow): number {
   if (isDone(row.status)) return 100
+  if (hasSteps(row)) return Math.min(99, Math.round((100 * num(row.stepDone)) / num(row.stepTotal)))
   const expected = learnedCalls(row, history)
   if (expected > 0) return Math.min(95, Math.round((100 * num(row.tools)) / Math.max(1, expected)))
   return Math.min(95, Math.round(100 * (1 - Math.exp(-num(row.tools) / 10))))
