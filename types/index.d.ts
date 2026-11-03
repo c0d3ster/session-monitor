@@ -34,6 +34,11 @@ export type AgentRow = {
   lastError?: string
   // How many times in a row it made the same tool call
   repeat?: number
+  // What the agent itself reported through the step tool: steps done out of
+  // planned, and the step in progress
+  stepDone?: number
+  stepTotal?: number
+  stepNote?: string
 }
 
 // The agents of one finished run, kept for the report

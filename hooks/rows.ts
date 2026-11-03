@@ -81,6 +81,32 @@ export function upsert(list: AgentRow[], id: string, patch: Partial<AgentRow>): 
   return out.slice(-MAX_ROWS)
 }
 
+// What a step report may carry; anything else on the call is ignored
+export type StepReport = { done?: number; total?: number; note?: string }
+
+export function readStepReport(input: Record<string, unknown>): StepReport {
+  const report: StepReport = {}
+  if (typeof input.done === 'number' && isFinite(input.done)) report.done = input.done
+  if (typeof input.total === 'number' && isFinite(input.total)) report.total = input.total
+  if (typeof input.note === 'string') report.note = input.note
+  return report
+}
+
+// Records an agent's own step report on its row. Fields left out keep their
+// previous value; done is held between 0 and total. Null when no row has `id`.
+export function withSteps(list: AgentRow[], id: string, report: StepReport): AgentRow[] | null {
+  const row = list.filter(r => r.id === id)[0]
+  if (!row) return null
+  const total = report.total === undefined ? row.stepTotal : Math.max(1, Math.round(report.total))
+  const done = Math.max(0, Math.round(report.done === undefined ? num(row.stepDone) : report.done))
+  const note = report.note === undefined ? row.stepNote : report.note.replace(/\s+/g, ' ').trim().slice(0, 80) || undefined
+  return upsert(list, id, {
+    stepTotal: total,
+    stepDone: total === undefined ? done : Math.min(total, done),
+    stepNote: note,
+  })
+}
+
 // Counts one tool call against `id` and adds it to that agent's log
 export function bumpTool(list: AgentRow[], id: string, tool: string, detail: string): AgentRow[] {
   const existing = list.filter(row => row.id === id)[0]
