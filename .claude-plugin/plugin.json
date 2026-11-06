@@ -5,5 +5,14 @@
   "author": {
     "name": "Karl Adams"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "stepReports": {
+      "type": "string",
+      "title": "Ask subagents to report steps",
+      "description": "on adds a reporting line to non-trivial subagent prompts so the pane can show real progress; off leaves prompts untouched",
+      "default": "on",
+      "options": ["on", "off"]
+    }
+  }
 }
