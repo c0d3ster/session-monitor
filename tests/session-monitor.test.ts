@@ -1,4 +1,4 @@
-import type { AgentSpawnInput, CommandRunInput } from 'claude-code'
+import type { AgentSpawnInput, CommandRunInput, On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
 // The full inputs the engine hands a hook, so a test names only what it cares about
@@ -372,4 +372,41 @@ test('reported progress stops short of 100% until the agent finishes', async ($,
   ui = await $.ui.mount(PANE)
   expect((await ui.find({ type: 'Text', text: /^99%$/ })) === undefined).toBe(true)
   await ui.unmount()
+})
+
+// Records the prompt the engine would run each subagent with, after this
+// plugin's hook. Hooks beneath the plugin must be registered before the first
+// call on `$`, so it is installed once per test.
+const watchSpawns = (on: On): { prompts: string[] } => {
+  const watch: { prompts: string[] } = { prompts: [] }
+  on('agent.spawn', (_$, e) => {
+    watch.prompts.push(e.prompt)
+    return { model: 'haiku', agentId: 'agent-' + watch.prompts.length }
+  })
+  return watch
+}
+
+const LONG = 'Refactor the parser so that it reads tokens lazily. '.repeat(6)
+
+test('a real task gets the reporting line after its original text', async ($, on) => {
+  const watch = watchSpawns(on)
+  await $.agent.spawn(spawnInput(LONG, 'refactor parser', 'general-purpose'))
+  const sent = watch.prompts[0] || ''
+  expect(sent.startsWith(LONG)).toBe(true)
+  expect(sent.includes('mcp__session-monitor__step')).toBe(true)
+})
+
+test('lookup agents, short prompts and prompts that already name a step tool are left alone', async ($, on) => {
+  const watch = watchSpawns(on)
+  const briefed = LONG + ' Report with mcp__other__step as you go.'
+  await $.agent.spawn(spawnInput(LONG, 'map the repo', 'Explore'))
+  await $.agent.spawn(spawnInput('find the TODOs', 'todo hunt', 'general-purpose'))
+  await $.agent.spawn(spawnInput(briefed, 'already briefed', 'general-purpose'))
+  expect(watch.prompts).toEqual([LONG, 'find the TODOs', briefed])
+})
+
+test('with stepReports off no prompt is touched', { options: { stepReports: 'off' } }, async ($, on) => {
+  const watch = watchSpawns(on)
+  await $.agent.spawn(spawnInput(LONG, 'refactor parser', 'general-purpose'))
+  expect(watch.prompts).toEqual([LONG])
 })

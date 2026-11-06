@@ -12,6 +12,14 @@ export const ORPHAN_MS = 20 * 1000
 // The tool workers call to report their own steps, named as the model sees it
 export const STEP_TOOL = 'mcp__session-monitor__step'
 
+// Added to the end of a worker's prompt so it knows to report. Agent types that
+// finish in a few calls, and prompts too short to be a real task, are left alone.
+export const STEP_BRIEF =
+  '\n\nProgress reporting: right after reading this brief, call ' + STEP_TOOL + ' with total (your plan in 3 to 8 steps) ' +
+  'and done: 0, then call it again as each step finishes. It is silent and only updates a progress bar.'
+export const STEP_SKIP_TYPES = ['Explore', 'Plan']
+export const STEP_MIN_PROMPT = 200
+
 // The prompt cache keeps an entry for about five minutes after its last use,
 // and every request that reads it starts the five minutes again. Claude Code
 // does not report the real lifetime, so the countdown assumes five minutes.

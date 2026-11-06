@@ -7,7 +7,7 @@ import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
-import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withSteps } from './rows'
+import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
 import { cacheStats, focusProbe, isBusy, latestNote, latestPrompt, live, liveExtra, mainTtlMs, subsOf, toolStats, ttlLabel, turnProgress, turnTools, usageStats, usdOf } from './transcripts'
 import { isRecord, num, oneLine, parseJson, str } from './util'
@@ -26,7 +26,7 @@ const view = atom({ plugin: 'session-monitor', key: 'view' } as const, {} as Vie
 const runs = atom({ plugin: 'session-monitor', key: 'runs' } as const, [] as RunRecord[])
 const stats = atom({ plugin: 'session-monitor', key: 'stats' } as const, {} as StatsRow)
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'session-monitor',
@@ -506,7 +506,10 @@ export const register: Register = on => {
 
   // A subagent is about to start: record it once the engine has given it an id
   on('agent.spawn', async ($, e, next) => {
-    const result = await next(e)
+    // Ask the worker to report its steps. Teammates idle between turns and a
+    // workflow agent's prompt cannot be rewritten, so neither is briefed.
+    const briefed = e.isTeammate || e.workflow ? e.prompt : withStepBrief(e.prompt, e.subagentType, options.stepReports !== 'off')
+    const result = await next(briefed === e.prompt ? e : Object.assign({}, e, { prompt: briefed }))
     const id = result.agentId
     if (id) {
       delete hidden[id]

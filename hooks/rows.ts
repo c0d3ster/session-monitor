@@ -1,5 +1,5 @@
 import type { AgentRow, SessionRow, StatsRow } from '../types'
-import { MAX_LOG, MAX_ROWS } from './constants'
+import { MAX_LOG, MAX_ROWS, STEP_BRIEF, STEP_MIN_PROMPT, STEP_SKIP_TYPES } from './constants'
 import { seconds } from './format'
 import { hidden } from './state'
 import { num } from './util'
@@ -79,6 +79,18 @@ export function upsert(list: AgentRow[], id: string, patch: Partial<AgentRow>): 
   })
   if (!found) out.push(Object.assign(blank(id), patch))
   return out.slice(-MAX_ROWS)
+}
+
+// The prompt a worker should run with: the original plus the reporting line,
+// or the original untouched when the line would not help. Left alone: the
+// option is off, a lookup-style agent type, a prompt too short to be a real
+// task, and a prompt that already names a step tool (briefed once is enough).
+export function withStepBrief(prompt: string, type: string, enabled: boolean): string {
+  if (!enabled) return prompt
+  if (STEP_SKIP_TYPES.indexOf(type) >= 0) return prompt
+  if (prompt.length < STEP_MIN_PROMPT) return prompt
+  if (prompt.indexOf('__step') >= 0) return prompt
+  return prompt + STEP_BRIEF
 }
 
 // What a step report may carry; anything else on the call is ignored

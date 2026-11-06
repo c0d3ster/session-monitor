@@ -64,6 +64,14 @@ Copy the folder somewhere permanent (for example `~/mods/agent-monitor`) and add
 - Saved history: each finished run is written to `~/.claude/agent-reports/` (`run-<time>.md`, and `history.json`, which the next session loads so the report keeps earlier runs). The report also compares runs side by side, and exports as JSON (`j`) or CSV (`v`).
 - If model responses arrive without token counts, the pane says so instead of showing dashes silently.
 
+## Settings
+
+`stepReports`: `on` (default) or `off`. When on, the mod adds one line to the end of every non-trivial subagent's prompt asking it to report its steps with the step tool, so the pane shows real progress. Left alone: `Explore` and `Plan` agents, prompts under 200 characters, prompts that already name a step tool, teammates and workflow agents. Set it in `/config`, or in `~/.claude/settings.json`:
+
+```json
+{ "pluginConfigs": { "session-monitor": { "options": { "stepReports": "off" } } } }
+```
+
 ## Other chats
 
 Below this session, the pane lists every other chat it finds (from `~/.claude/sessions/`): working chats first, then idle ones (shown by default; the idle chats button or `i` hides them). Each row reads `<o> ● name`, then its figures and cost. Press the name to open that chat's details.
