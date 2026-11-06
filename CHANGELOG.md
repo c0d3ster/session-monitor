@@ -4,6 +4,15 @@ All notable changes to session-monitor (called agent-monitor until 0.2.0). Newes
 
 From the next release on, this file and the version in `plugin.json` are written by release-please from the commit messages (see the release PR it opens). Entries below were written by hand.
 
+## [0.4.0](https://github.com/c0d3ster/session-monitor/compare/v0.3.0...v0.4.0) (2026-11-06)
+
+
+### Features
+
+* add a step tool workers can use to report their own progress ([3fb79d4](https://github.com/c0d3ster/session-monitor/commit/3fb79d4665be36e13425f74a6d991430b8ff2a29)), closes [#4](https://github.com/c0d3ster/session-monitor/issues/4)
+* ask non-trivial subagents to report their steps ([163fdaa](https://github.com/c0d3ster/session-monitor/commit/163fdaa256a187237e8f67b3334b2c07b6e03e9c)), closes [#5](https://github.com/c0d3ster/session-monitor/issues/5)
+* show reported steps as real progress on running agent rows ([b1e2d6a](https://github.com/c0d3ster/session-monitor/commit/b1e2d6a4bee9ddb2af07e02af2b0b5a8048c37bd)), closes [#6](https://github.com/c0d3ster/session-monitor/issues/6)
+
 ## [0.3.0](https://github.com/c0d3ster/session-monitor/compare/session-monitor-v0.2.1...session-monitor-v0.3.0) (2026-11-02)
 
 
