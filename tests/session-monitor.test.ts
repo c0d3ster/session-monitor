@@ -426,3 +426,50 @@ test('with stepReports off no prompt is touched', { options: { stepReports: 'off
   await $.agent.spawn(spawnInput(LONG, 'refactor parser', 'general-purpose'))
   expect(watch.prompts).toEqual([LONG])
 })
+
+// The plan tool is this plugin's own too, so its calls also go in as `never`
+type PlanTaskInput = { id: string; title?: string; tier?: string; dependsOn?: string[]; status?: string }
+const planCall = (fields: { title?: string; phase?: string; tasks?: PlanTaskInput[]; agentId?: string }): never =>
+  Object.assign({ tool: 'mcp__session-monitor__plan' }, fields) as never
+
+test('the main session posts a plan and gets it back as an acknowledgement', async ($, on) => {
+  on('tool.call', () => ({ result: 'unhandled' }))
+  const posted = await $.tool.call(
+    planCall({
+      title: 'ship 0.5.0',
+      phase: 'plan',
+      tasks: [
+        { id: 't1', title: 'plan tool', tier: 'medium' },
+        { id: 't2', title: 'flow bar', dependsOn: ['t1'] },
+      ],
+    }),
+  )
+  expect(String(posted.result)).toBe('ok: "ship 0.5.0", phase plan, 2 tasks (0 done)')
+})
+
+test('tasks are matched by id, so a rename keeps the task and its status', async ($, on) => {
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.tool.call(planCall({ title: 'ship 0.5.0', phase: 'tasks', tasks: [{ id: 't1', title: 'plan tool' }, { id: 't2', title: 'flow bar' }] }))
+  await $.tool.call(planCall({ tasks: [{ id: 't1', status: 'done' }] }))
+  const renamed = await $.tool.call(planCall({ tasks: [{ id: 't1', title: 'plan tool, renamed' }] }))
+  // Still two tasks, t1 still done, and the title and phase are kept
+  expect(String(renamed.result)).toBe('ok: "ship 0.5.0", phase tasks, 2 tasks (1 done)')
+})
+
+test('a new title starts a new plan, and bad fields are dropped', async ($, on) => {
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.tool.call(planCall({ title: 'first flow', phase: 'review', tasks: [{ id: 't1' }, { id: 't2' }] }))
+  const second = await $.tool.call(planCall({ title: 'second flow', phase: 'nonsense', tasks: [{ id: 'a' }, { id: '' }, { id: 'b', status: 'bogus' }] }))
+  expect(String(second.result)).toBe('ok: "second flow", phase none, 2 tasks (0 done)')
+})
+
+test('a worker cannot post or change the plan', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.agent.spawn(spawnInput('refactor the parser', 'refactor parser', 'general-purpose'))
+  await $.tool.call(planCall({ title: 'real plan', tasks: [{ id: 't1' }] }))
+  const worker = await $.tool.call(planCall({ title: 'worker plan', tasks: [{ id: 'x' }], agentId: 'agent-1' }))
+  expect(String(worker.result).startsWith('ignored')).toBe(true)
+  const after = await $.tool.call(planCall({}))
+  expect(String(after.result)).toBe('ok: "real plan", phase none, 1 task (0 done)')
+})

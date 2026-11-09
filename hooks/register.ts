@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { AgentRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
+import type { AgentRow, PlanRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
-import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, PLAN_TOOL, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
+import { PHASES, TASK_STATUSES, planAck, readPlanReport, withPlan } from './plan'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
 import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
@@ -25,6 +26,8 @@ const session = atom(
 const view = atom({ plugin: 'session-monitor', key: 'view' } as const, {} as ViewRow)
 const runs = atom({ plugin: 'session-monitor', key: 'runs' } as const, [] as RunRecord[])
 const stats = atom({ plugin: 'session-monitor', key: 'stats' } as const, {} as StatsRow)
+const noPlan: PlanRow = { tasks: [] }
+const plan = atom({ plugin: 'session-monitor', key: 'plan' } as const, noPlan)
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
@@ -62,6 +65,39 @@ export const register: Register = (on, options) => {
           note: { type: 'string', description: 'Short label for what you are working on now.' },
         },
         required: ['done'],
+      },
+      isDeferred: false,
+    })
+
+    // Lets the main session post its plan, so the pane can show every task
+    // before it runs. Only the main session posts; a worker's call is ignored.
+    await $.tool.register({
+      name: 'plan',
+      description:
+        'Post or update your plan in the session monitor. Call it when you plan the work, when the phase changes, ' +
+        'and as tasks start and finish. Tasks are matched by `id`, so send only the ones that changed; renaming a task ' +
+        'keeps its place. A call with a new `title` starts a new plan. Only the main session can post.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'What the whole flow is for, a few words.' },
+          phase: { type: 'string', enum: PHASES, description: 'Where the flow is now.' },
+          tasks: {
+            type: 'array',
+            description: 'Tasks to add or update.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Short stable id, such as t1. Use the same id in every call.' },
+                title: { type: 'string', description: 'What the task does.' },
+                tier: { type: 'string', description: 'Worker tier or model the task is meant for.' },
+                dependsOn: { type: 'array', items: { type: 'string' }, description: 'Ids of tasks that must finish first.' },
+                status: { type: 'string', enum: TASK_STATUSES },
+              },
+              required: ['id'],
+            },
+          },
+        },
       },
       isDeferred: false,
     })
@@ -548,13 +584,23 @@ export const register: Register = (on, options) => {
     return { result: 'ok: ' + num(found.row.stepDone) + '/' + num(found.row.stepTotal) }
   })
 
+  // The main session's plan. A worker's call changes nothing: the plan is the
+  // orchestrator's, and a worker posting one would replace it.
+  on('tool.call', { tool: PLAN_TOOL }, async ($, e) => {
+    if (e.agentId) return { result: 'ignored: only the main session posts the plan' }
+    const report = readPlanReport(e)
+    const now = Date.now()
+    await update($, plan, current => withPlan(current, report, now))
+    return { result: planAck(await read($, plan)) }
+  })
+
   // Every tool call, attributed to the loop it ran in
   on('tool.call', async ($, e, next) => {
     // A subagent's report back to its parent, and a step report, are not work
     // the agent did. The engine's tool typings do not list SubagentHandback,
     // so the name is compared as a string.
     const toolName: string = e.tool
-    if (toolName === 'SubagentHandback' || toolName === STEP_TOOL) return next(e)
+    if (toolName === 'SubagentHandback' || toolName === STEP_TOOL || toolName === PLAN_TOOL) return next(e)
     // Another mod's step tool (savvy-progress installed alongside): its report
     // feeds this pane's bar too, and it is not counted as a call
     if (OTHER_STEP_TOOLS.indexOf(toolName) >= 0) {
