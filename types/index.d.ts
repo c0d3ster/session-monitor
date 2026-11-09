@@ -103,8 +103,29 @@ export type ViewRow = {
   showIdle?: boolean
 }
 
+// The plan the main session posts with the plan tool (hooks/plan.ts)
+export type Phase = 'plan' | 'design' | 'tasks' | 'review' | 'done'
+export type TaskStatus = 'planned' | 'running' | 'done' | 'failed' | 'skipped'
+
+export type PlanTask = {
+  id: string
+  title: string
+  // Free text, such as a worker tier (light, medium, heavy) or a model
+  tier?: string
+  // Ids of tasks that must finish first
+  dependsOn: string[]
+  status: TaskStatus
+}
+
+export type PlanRow = {
+  title?: string
+  phase?: Phase
+  tasks: PlanTask[]
+  updatedAt?: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'session-monitor': { agents: AgentRow[]; session: SessionRow; view: ViewRow; runs: RunRecord[]; stats: StatsRow }
+    'session-monitor': { agents: AgentRow[]; session: SessionRow; view: ViewRow; runs: RunRecord[]; stats: StatsRow; plan: PlanRow }
   }
 }
