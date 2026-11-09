@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 
 import type { AgentRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
-import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, PANE, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
@@ -554,6 +554,16 @@ export const register: Register = (on, options) => {
     // so the name is compared as a string.
     const toolName: string = e.tool
     if (toolName === 'SubagentHandback' || toolName === STEP_TOOL) return next(e)
+    // Another mod's step tool (savvy-progress installed alongside): its report
+    // feeds this pane's bar too, and it is not counted as a call
+    if (OTHER_STEP_TOOLS.indexOf(toolName) >= 0) {
+      const agentId = e.agentId
+      if (agentId) {
+        const report = readStepReport(e)
+        await update($, agents, list => withSteps(list, agentId, report) || list)
+      }
+      return next(e)
+    }
     // Claude Code's own helpers (the prompt suggestion, for one) tag tool calls
     // with an agent id that was never spawned as an agent: leave those alone
     if (e.agentId) {
