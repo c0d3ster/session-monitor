@@ -6,7 +6,7 @@ import type { AgentRow, PlanRow, RunRecord, SessionRow, StatsRow, ViewRow } from
 import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, PLAN_TOOL, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
-import { PHASES, TASK_STATUSES, planAck, readPlanReport, withPlan } from './plan'
+import { PHASES, TASK_STATUSES, planAck, readPlanReport, taskIdOf, withPlan, withoutTaskMark } from './plan'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
 import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
@@ -552,7 +552,8 @@ export const register: Register = (on, options) => {
       delete hidden[id]
       await update($, agents, list =>
         upsert(list, id, {
-          name: e.name || e.description,
+          name: e.name || withoutTaskMark(e.description) || e.description,
+          taskId: taskIdOf(e.description || '', e.prompt || ''),
           type: e.subagentType,
           parentId: e.parentAgentId || 'main',
           status: 'running',
@@ -591,7 +592,7 @@ export const register: Register = (on, options) => {
     const report = readPlanReport(e)
     const now = Date.now()
     await update($, plan, current => withPlan(current, report, now))
-    return { result: planAck(await read($, plan)) }
+    return { result: planAck(await read($, plan), await read($, agents)) }
   })
 
   // Every tool call, attributed to the loop it ran in

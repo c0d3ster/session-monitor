@@ -473,3 +473,33 @@ test('a worker cannot post or change the plan', async ($, on) => {
   const after = await $.tool.call(planCall({}))
   expect(String(after.result)).toBe('ok: "real plan", phase none, 1 task (0 done)')
 })
+
+test('a run carrying [task:id] drives its task, and a rename keeps the match', async ($, on) => {
+  let n = 0
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.tool.call(planCall({ title: 'ship it', phase: 'tasks', tasks: [{ id: 't1', title: 'plan tool' }, { id: 't2', title: 'flow bar' }] }))
+  await $.agent.spawn(spawnInput('build the plan tool', '[task:t1] plan tool', 'general-purpose'))
+  await $.agent.spawn(spawnInput('unrelated [task: t2 ] work', 'flow bar', 'general-purpose'))
+
+  // Both running, none done; the marker is not part of the agent's name
+  expect(String((await $.tool.call(planCall({}))).result)).toBe('ok: "ship it", phase tasks, 2 tasks (0 done)')
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /\[task:/ })) === undefined).toBe(true)
+  await ui.unmount()
+
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'turn-1', agentId: 'agent-1', reason: 'answer' })
+  const renamed = await $.tool.call(planCall({ tasks: [{ id: 't1', title: 'plan tool, renamed' }] }))
+  expect(String(renamed.result)).toBe('ok: "ship it", phase tasks, 2 tasks (1 done)')
+})
+
+test('a verdict the orchestrator posts wins over the run', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.tool.call(planCall({ title: 'ship it', tasks: [{ id: 't1' }] }))
+  await $.agent.spawn(spawnInput('build it', '[task:t1] build', 'general-purpose'))
+  // Still running, but the orchestrator accepted it
+  const accepted = await $.tool.call(planCall({ tasks: [{ id: 't1', status: 'done' }] }))
+  expect(String(accepted.result)).toBe('ok: "ship it", phase none, 1 task (1 done)')
+})

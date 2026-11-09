@@ -1,5 +1,6 @@
-import type { Phase, PlanRow, PlanTask, TaskStatus } from '../types'
+import type { AgentRow, Phase, PlanRow, PlanTask, TaskStatus } from '../types'
 
+import { isDone } from './rows'
 import { isRecord, oneLine } from './util'
 
 // The plan an orchestrator posts with the plan tool: a title, the phase the
@@ -95,9 +96,10 @@ export const withPlan = (plan: PlanRow, report: PlanReport, now: number): PlanRo
   }
 }
 
-// The acknowledgement the orchestrator gets back
-export const planAck = (plan: PlanRow): string => {
-  const done = plan.tasks.filter(t => t.status === 'done').length
+// The acknowledgement the orchestrator gets back, with task status as the
+// runs have it
+export const planAck = (plan: PlanRow, rows: AgentRow[]): string => {
+  const done = plan.tasks.filter(t => taskStatus(t, rows) === 'done').length
   return (
     'ok: ' +
     (plan.title ? '"' + plan.title + '", ' : '') +
@@ -105,4 +107,35 @@ export const planAck = (plan: PlanRow): string => {
     plan.tasks.length + (plan.tasks.length === 1 ? ' task' : ' tasks') +
     ' (' + done + ' done)'
   )
+}
+
+// A spawn names the task it carries out with a [task:<id>] marker in its
+// description or prompt. Matching on the id, not the title, survives a rename.
+const TASK_MARK = /\[task:\s*([^\]\s]+)\s*\]/i
+
+export const taskIdOf = (description: string, prompt: string): string | undefined => {
+  const found = TASK_MARK.exec(description) || TASK_MARK.exec(prompt)
+  const id = found ? found[1] : undefined
+  return id ? id.slice(0, 40) : undefined
+}
+
+// The description with its marker taken out, for the agent's name
+export const withoutTaskMark = (text: string): string => text.replace(TASK_MARK, '').replace(/\s+/g, ' ').trim()
+
+// Where a task stands. A verdict the orchestrator posted (done, failed,
+// skipped) is final; otherwise the latest run carrying the task's id decides,
+// and a task with no run keeps what was posted.
+export const taskStatus = (task: PlanTask, rows: AgentRow[]): TaskStatus => {
+  if (task.status === 'done' || task.status === 'failed' || task.status === 'skipped') return task.status
+  const runsOf = rows.filter(row => row.taskId === task.id)
+  if (runsOf.length === 0) return task.status
+  const latest = runsOf.reduce((a, b) => (b.startedAt > a.startedAt ? b : a))
+  if (latest.status === 'running') return 'running'
+  return isDone(latest.status) ? 'done' : 'failed'
+}
+
+// The latest run of a task, for its progress and the link to its row
+export const runOf = (task: PlanTask, rows: AgentRow[]): AgentRow | undefined => {
+  const runsOf = rows.filter(row => row.taskId === task.id)
+  return runsOf.length === 0 ? undefined : runsOf.reduce((a, b) => (b.startedAt > a.startedAt ? b : a))
 }

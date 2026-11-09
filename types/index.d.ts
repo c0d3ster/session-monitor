@@ -39,6 +39,8 @@ export type AgentRow = {
   stepDone?: number
   stepTotal?: number
   stepNote?: string
+  // The plan task this run carries out, from a [task:<id>] marker in its spawn
+  taskId?: string
 }
 
 // The agents of one finished run, kept for the report
