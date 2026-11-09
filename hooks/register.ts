@@ -3,10 +3,10 @@ import type { Register } from 'claude-code'
 
 import type { AgentRow, PlanRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
-import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, PLAN_TOOL, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, PLAN_TOOL, SHOW_LOG, SHOW_TASKS, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
-import { PHASES, TASK_STATUSES, planAck, readPlanReport, taskIdOf, withPlan, withoutTaskMark } from './plan'
+import { PHASES, TASK_MARKS, TASK_STATUSES, flowSteps, planAck, readPlanReport, runOf, taskIdOf, taskStatus, waitingOn, withPlan, withoutTaskMark } from './plan'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
 import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
@@ -1598,6 +1598,77 @@ export const register: Register = (on, options) => {
           ? blocks
           : [Text({ dimColor: true, children: ['Nothing matches the filter or search.'] })]
 
+    // The plan the main session posted: a flow bar through the phases, then
+    // every task, planned ones included, with its run's progress once it runs
+    const posted = await read($, plan)
+    const planSection: ReturnType<typeof Box>[] = []
+    if (posted.tasks.length > 0 || posted.title) {
+      const doneCount = posted.tasks.filter(t => taskStatus(t, list) === 'done').length
+      const steps = flowSteps(posted, list)
+      const shownTasks = posted.tasks.slice(0, SHOW_TASKS)
+      const taskLines = shownTasks.map(task => {
+        const status = taskStatus(task, list)
+        const look = TASK_MARKS[status]
+        const run = runOf(task, list)
+        const waits = status === 'planned' ? waitingOn(task, posted, list) : []
+        const extra =
+          (task.tier ? ' [' + task.tier + ']' : '') +
+          (status === 'running' && run ? ' ' + (hasSteps(run) ? '' : '~') + progressOf(run, learned) + '%' : '') +
+          (waits.length > 0 ? ' · after ' + waits.join(', ') : '')
+        return Box({
+          key: 'task-' + task.id,
+          flexDirection: 'row',
+          columnGap: 1,
+          children: [
+            Text({ color: look.color, dimColor: status === 'planned' || status === 'skipped', children: [look.mark] }),
+            Text({
+              dimColor: status === 'skipped',
+              strikethrough: status === 'skipped',
+              children: [cut(task.title + extra, cols - 4)],
+            }),
+          ],
+        })
+      })
+      if (posted.tasks.length > shownTasks.length) {
+        taskLines.push(Text({ dimColor: true, children: ['  +' + (posted.tasks.length - shownTasks.length) + ' more'] }))
+      }
+      planSection.push(
+        Box({
+          flexDirection: 'column',
+          children: [
+            Box({
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              width: cols,
+              children: [
+                Box({
+                  flexDirection: 'row',
+                  columnGap: 2,
+                  children: [
+                    Text({ bold: true, children: ['Plan'] }),
+                    Text({ dimColor: true, children: [cut(posted.title || '', Math.max(8, cols - 20))] }),
+                  ],
+                }),
+                Text({ children: [posted.tasks.length > 0 ? doneCount + '/' + posted.tasks.length + ' done' : ''] }),
+              ],
+            }),
+            Box({
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              children: steps.map((step, i) =>
+                Text({
+                  bold: step.state === 'current',
+                  color: step.state === 'current' ? 'cyan' : step.state === 'past' ? 'green' : undefined,
+                  dimColor: step.state === 'future',
+                  children: [(i > 0 ? ' › ' : '') + (step.state === 'past' ? '✓ ' : '') + step.label],
+                }),
+              ),
+            }),
+          ].concat(taskLines),
+        }),
+      )
+    }
+
     // The footer sits at the bottom of the pane: the content grows to fill
     // whatever room the dock gives, and the footer follows it
     const bodyRows = e.props.scroll ? num(e.props.scroll.bodyRows) : 0
@@ -1606,6 +1677,7 @@ export const register: Register = (on, options) => {
       flexGrow: 1,
       rowGap: 1,
       children: [Box({ flexDirection: 'column', children: summary })].concat(
+        planSection,
         attention,
         subs.length > 0 ? search : [],
         [Box({ flexDirection: 'column', rowGap: 1, children: body })],
