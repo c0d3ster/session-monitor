@@ -12,6 +12,11 @@ export const ORPHAN_MS = 20 * 1000
 // The tool workers call to report their own steps, named as the model sees it
 export const STEP_TOOL = 'mcp__session-monitor__step'
 
+// Step tools from other mods that take the same done/total/note report. When
+// one is installed alongside, its calls feed this pane's bar and are not
+// counted as work the agent did.
+export const OTHER_STEP_TOOLS = ['mcp__savvy-progress__step']
+
 // Added to the end of a worker's prompt so it knows to report. Agent types that
 // finish in a few calls, and prompts too short to be a real task, are left alone.
 export const STEP_BRIEF =

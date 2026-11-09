@@ -338,6 +338,22 @@ test('a step report is not counted as a tool call', async ($, on) => {
   await ui.unmount()
 })
 
+test('a savvy-progress step report feeds the bar and is not counted as a tool call', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.agent.spawn(spawnInput('look around', 'map the repo', 'general-purpose'))
+  await $.tool.call(taggedCall({ tool: 'Grep', pattern: 'TODO', agentId: 'agent-1' }))
+  await $.tool.call(
+    Object.assign({ tool: 'mcp__savvy-progress__step' }, { done: 1, total: 4, note: 'mapping', agentId: 'agent-1' }) as never,
+  )
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^1\/4 steps$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /1 calls?\b/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /2 calls/ })) === undefined).toBe(true)
+  await ui.unmount()
+})
+
 test('an agent that reports steps shows a real bar, and one that does not keeps the estimate', async ($, on) => {
   let n = 0
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
