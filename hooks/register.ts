@@ -46,19 +46,20 @@ export const register: Register = (on, options) => {
 
     // Lets a worker report its own steps, so the pane can show real progress
     // instead of an estimate. In every agent's tool list, not behind ToolSearch:
-    // a worker does not go looking for it.
+    // a worker does not go looking for it. The idea of a worker step tool was
+    // taken from savvy-progress (github.com/johnnyvizz/claude-kit), used as a reference.
     await $.tool.register({
       name: 'step',
       description:
-        'Report your own progress to the session monitor. Right after reading your brief, call it with `total` ' +
-        '(your plan in 3 to 8 steps) and `done: 0`; call it again as each step finishes. ' +
-        'Cheap and silent: it only updates a progress bar.',
+        'Tell the session monitor how far along your task is. Once you have planned the work, call it with ' +
+        '`total` set to the number of steps (3 to 8) and `done: 0`. After each step, call it again with the new `done`. ' +
+        'It returns at once and only moves your row\'s bar in the monitor pane.',
       inputSchema: {
         type: 'object',
         properties: {
-          done: { type: 'integer', minimum: 0, description: 'Steps finished so far.' },
-          total: { type: 'integer', minimum: 1, description: 'Steps planned; may change if the plan changes.' },
-          note: { type: 'string', description: 'The step in progress, a few words.' },
+          done: { type: 'integer', minimum: 0, description: 'How many steps are complete.' },
+          total: { type: 'integer', minimum: 1, description: 'How many steps the task has. Send a new value if the plan grows or shrinks.' },
+          note: { type: 'string', description: 'Short label for what you are working on now.' },
         },
         required: ['done'],
       },

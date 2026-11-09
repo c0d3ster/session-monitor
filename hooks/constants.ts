@@ -20,8 +20,8 @@ export const OTHER_STEP_TOOLS = ['mcp__savvy-progress__step']
 // Added to the end of a worker's prompt so it knows to report. Agent types that
 // finish in a few calls, and prompts too short to be a real task, are left alone.
 export const STEP_BRIEF =
-  '\n\nProgress reporting: right after reading this brief, call ' + STEP_TOOL + ' with total (your plan in 3 to 8 steps) ' +
-  'and done: 0, then call it again as each step finishes. It is silent and only updates a progress bar.'
+  '\n\nSession monitor: once you have planned this task, call ' + STEP_TOOL + ' with total set to the number of steps ' +
+  '(3 to 8) and done: 0. After each step, call it again with the new done count. It only moves your bar in the monitor.'
 export const STEP_SKIP_TYPES = ['Explore', 'Plan']
 export const STEP_MIN_PROMPT = 200
 
