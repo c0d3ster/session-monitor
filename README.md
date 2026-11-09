@@ -20,8 +20,6 @@ It is one pane with two views, not two plugins. Press `m` in the pane (the `View
 /plugin install session-monitor --marketplace c0d3ster/session-monitor
 ```
 
-Originally written by Karl Adams.
-
 ## Try it
 
 ```bash
@@ -124,3 +122,9 @@ The focus helper (`scripts/focus-window.cjs`) runs on Windows (through `focus-wi
 - `CHANGELOG.md`: what changed in each version
 
 Check it with `claude plugin validate .` and `claude plugin test .`.
+
+## Credits
+
+Karl Adams wrote the original implementation, `agent-monitor`. Cody Douglass added the session monitor capabilities that turned it into `session-monitor`.
+
+The worker step tool and the reporting line added to subagent prompts were designed with [savvy-progress](https://github.com/johnnyvizz/claude-kit) by johnnyvizz as a reference. When both mods are installed, savvy-progress step reports also move this pane's progress bars.
