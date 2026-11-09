@@ -534,7 +534,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: STEP_TOOL }, async ($, e) => {
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
-    const report = readStepReport(e as unknown as Record<string, unknown>)
+    const report = readStepReport(e)
     // Holder object: the update callback runs later, so a plain `let` would be
     // narrowed to undefined after it
     const found: { row?: AgentRow } = {}
@@ -562,7 +562,7 @@ export const register: Register = (on, options) => {
     }
     const id = e.agentId || 'main'
     delete hidden[id]
-    const detail = summarize(e as unknown as Record<string, unknown>)
+    const detail = summarize(e)
     await update($, agents, list => bumpTool(list, id, String(e.tool), detail))
 
     const rows = await read($, agents)
