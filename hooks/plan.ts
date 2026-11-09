@@ -139,3 +139,38 @@ export const runOf = (task: PlanTask, rows: AgentRow[]): AgentRow | undefined =>
   const runsOf = rows.filter(row => row.taskId === task.id)
   return runsOf.length === 0 ? undefined : runsOf.reduce((a, b) => (b.startedAt > a.startedAt ? b : a))
 }
+
+// One stop on the flow bar, and whether the flow is past it, on it or not
+// there yet
+export type FlowStep = { label: string; state: 'past' | 'current' | 'future' }
+
+export const flowSteps = (plan: PlanRow, rows: AgentRow[]): FlowStep[] => {
+  const at = plan.phase ? PHASES.indexOf(plan.phase) : -1
+  const done = plan.tasks.filter(t => taskStatus(t, rows) === 'done').length
+  return PHASES.map((phase, i) => ({
+    label:
+      phase === 'tasks' && plan.tasks.length > 0
+        ? 'Tasks ' + done + '/' + plan.tasks.length
+        : phase.charAt(0).toUpperCase() + phase.slice(1),
+    state: i < at || (phase === 'done' && i === at) ? 'past' : i === at ? 'current' : 'future',
+  }))
+}
+
+// The mark and colour a task's status is drawn with
+export const TASK_MARKS: { [s in TaskStatus]: { mark: string; color?: string } } = {
+  planned: { mark: '○' },
+  running: { mark: '●', color: 'yellow' },
+  done: { mark: '✓', color: 'green' },
+  failed: { mark: '✗', color: 'red' },
+  skipped: { mark: '–' },
+}
+
+// Dependencies of a task that have not finished, so the line can say what it
+// waits on
+export const waitingOn = (task: PlanTask, plan: PlanRow, rows: AgentRow[]): string[] =>
+  task.dependsOn.filter(id => {
+    const dep = plan.tasks.filter(t => t.id === id)[0]
+    if (!dep) return false
+    const s = taskStatus(dep, rows)
+    return s !== 'done' && s !== 'skipped'
+  })

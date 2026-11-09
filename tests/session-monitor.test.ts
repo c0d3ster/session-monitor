@@ -503,3 +503,43 @@ test('a verdict the orchestrator posts wins over the run', async ($, on) => {
   const accepted = await $.tool.call(planCall({ tasks: [{ id: 't1', status: 'done' }] }))
   expect(String(accepted.result)).toBe('ok: "ship it", phase none, 1 task (1 done)')
 })
+
+test('the pane shows the plan: flow bar, every task, and progress once a task runs', async ($, on) => {
+  let n = 0
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  await $.tool.call(
+    planCall({
+      title: 'ship it',
+      phase: 'tasks',
+      tasks: [
+        { id: 't1', title: 'plan tool', tier: 'medium', status: 'done' },
+        { id: 't2', title: 'flow bar', tier: 'heavy' },
+        { id: 't3', title: 'skill', dependsOn: ['t2'] },
+      ],
+    }),
+  )
+  await $.agent.spawn(spawnInput('draw the bar', '[task:t2] flow bar', 'general-purpose'))
+  await $.tool.call(stepCall({ done: 1, total: 4, agentId: 'agent-1' }))
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^Plan$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /^1\/3 done$/ })) === undefined).toBe(false)
+  // The flow bar: Plan and Design behind, Tasks current with its count, the rest ahead
+  expect((await ui.find({ type: 'Text', text: /^✓ Plan$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: / › Tasks 1\/3$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: / › Review$/ })) === undefined).toBe(false)
+  // Each task: planned, running with its reported progress, waiting on a dependency
+  expect((await ui.find({ type: 'Text', text: /^plan tool \[medium\]$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /^flow bar \[heavy\] 25%$/ })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /^skill · after t2$/ })) === undefined).toBe(false)
+  await ui.unmount()
+})
+
+test('with no plan posted the pane has no Plan section', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  await $.agent.spawn(spawnInput('look around', 'map the repo', 'general-purpose'))
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^Plan$/ })) === undefined).toBe(true)
+  await ui.unmount()
+})
