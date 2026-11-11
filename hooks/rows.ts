@@ -186,7 +186,7 @@ export function merge(
       status: info.status,
       parentId: info.parentId,
     }
-    if (info.status !== 'running' && (!before || before.endedAt === undefined)) {
+    if (!isActive(info.status) && (!before || before.endedAt === undefined)) {
       patch.endedAt = Date.now()
     }
     out = upsert(out, info.id, patch)
@@ -194,11 +194,12 @@ export function merge(
   return out
 }
 
-// Drops every agent that is not running (the main session stays), and
-// remembers them so the sync does not bring them back
+// Drops every agent that has stopped (the main session stays), and
+// remembers them so the sync does not bring them back. One that is waiting or
+// queued has not stopped and stays.
 export function dismissFinished(list: AgentRow[]): AgentRow[] {
   return list.filter(row => {
-    const keep = row.id === 'main' || row.status === 'running'
+    const keep = row.id === 'main' || isActive(row.status)
     if (!keep) hidden[row.id] = true
     return keep
   })
@@ -213,29 +214,39 @@ export function isDone(status: string): boolean {
   return status === 'completed' || status === 'done'
 }
 
+// Still alive: running, or queued (pending) or waiting on something before it
+// carries on. The engine's agent list uses all three.
+export function isActive(status: string): boolean {
+  return status === 'running' || status === 'pending' || status === 'waiting'
+}
+
+// Only an ending the engine names as a failure counts: a status this mod does
+// not know is not read as one
 export function isFailed(status: string): boolean {
-  return status !== 'running' && status !== 'idle' && !isDone(status)
+  return status === 'failed' || status === 'killed'
 }
 
 export function statusWord(status: string): string {
   if (isDone(status)) return 'done'
   if (status === 'killed') return 'stopped'
-  if (status === 'failed') return 'failed'
+  if (status === 'pending') return 'queued'
   return status
 }
 
 export function marker(status: string): string {
   if (status === 'running') return '●'
-  if (status === 'idle') return '○'
+  if (status === 'pending' || status === 'waiting') return '◌'
   if (isDone(status)) return '✓'
-  return '✗'
+  if (isFailed(status)) return '✗'
+  return '○'
 }
 
 export function colorOf(status: string): string | undefined {
   if (status === 'running') return 'cyan'
+  if (status === 'pending' || status === 'waiting') return 'yellow'
   if (isDone(status)) return 'green'
-  if (status === 'idle') return undefined
-  return 'red'
+  if (isFailed(status)) return 'red'
+  return undefined
 }
 
 // Claude Code does not report how far through its work an agent is, so a
