@@ -117,6 +117,9 @@ export type PlanTask = {
   // Ids of tasks that must finish first
   dependsOn: string[]
   status: TaskStatus
+  // How the task's last run ended, kept for when that run's row is cleared
+  // from the live list (a new prompt, or Clear finished)
+  settled?: TaskStatus
 }
 
 export type PlanRow = {

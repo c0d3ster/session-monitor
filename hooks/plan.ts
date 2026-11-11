@@ -1,6 +1,6 @@
 import type { AgentRow, Phase, PlanRow, PlanTask, TaskStatus } from '../types'
 
-import { isDone } from './rows'
+import { isActive, isDone } from './rows'
 import { isRecord, oneLine } from './util'
 
 // The plan an orchestrator posts with the plan tool: a title, the phase the
@@ -84,6 +84,7 @@ export const withPlan = (plan: PlanRow, report: PlanReport, now: number): PlanRo
       tier: item.tier !== undefined ? item.tier : old ? old.tier : undefined,
       dependsOn: item.dependsOn !== undefined ? item.dependsOn : old ? old.dependsOn : [],
       status: item.status || (old ? old.status : 'planned'),
+      settled: old ? old.settled : undefined,
     }
     if (at >= 0) tasks[at] = merged
     else if (tasks.length < MAX_TASKS) tasks.push(merged)
@@ -123,16 +124,34 @@ export const taskIdOf = (description: string, prompt: string): string | undefine
 export const withoutTaskMark = (text: string): string => text.replace(TASK_MARK, '').replace(/\s+/g, ' ').trim()
 
 // Where a task stands. A verdict the orchestrator posted (done, failed,
-// skipped) is final; otherwise the latest run carrying the task's id decides,
-// and a task with no run keeps what was posted.
+// skipped) is final; otherwise the latest run carrying the task's id decides.
+// With no run in the list, how its last run ended (kept when that row was
+// cleared) decides, and a task that never ran keeps what was posted.
 export const taskStatus = (task: PlanTask, rows: AgentRow[]): TaskStatus => {
   if (task.status === 'done' || task.status === 'failed' || task.status === 'skipped') return task.status
   const runsOf = rows.filter(row => row.taskId === task.id)
-  if (runsOf.length === 0) return task.status
+  if (runsOf.length === 0) return task.settled || task.status
   const latest = runsOf.reduce((a, b) => (b.startedAt > a.startedAt ? b : a))
-  if (latest.status === 'running') return 'running'
+  if (isActive(latest.status)) return 'running'
   return isDone(latest.status) ? 'done' : 'failed'
 }
+
+// Before rows are cleared from the live list: each task whose latest run has
+// ended keeps that ending, so it does not fall back to what was posted
+export const settleTasks = (plan: PlanRow, rows: AgentRow[]): PlanRow => {
+  const tasks = plan.tasks.map(task => {
+    if (!rows.some(row => row.taskId === task.id)) return task
+    const status = taskStatus(task, rows)
+    if (status !== 'done' && status !== 'failed') return task
+    return Object.assign({}, task, { settled: status })
+  })
+  return Object.assign({}, plan, { tasks })
+}
+
+// What a new prompt leaves of the plan: one that reached done is over and
+// goes; any other keeps its tasks, settled against the rows being cleared
+export const planForNextRun = (plan: PlanRow, rows: AgentRow[]): PlanRow =>
+  plan.phase === 'done' ? { tasks: [] } : settleTasks(plan, rows)
 
 // The latest run of a task, for its progress and the link to its row
 export const runOf = (task: PlanTask, rows: AgentRow[]): AgentRow | undefined => {

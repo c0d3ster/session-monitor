@@ -33,8 +33,10 @@ export type Live = {
 }
 
 // What the last scan of ~/.claude/sessions found and how it went
-export type LiveState = { sessions: Live[]; mine: string; convoError: string; scans: number }
-export const live: LiveState = { sessions: [], mine: '', convoError: '', scans: 0 }
+// tickError: the latest failure inside the once-a-second sync, kept so it can be
+// seen instead of silently stopping the pane
+export type LiveState = { sessions: Live[]; mine: string; convoError: string; tickError: string; scans: number }
+export const live: LiveState = { sessions: [], mine: '', convoError: '', tickError: '', scans: 0 }
 
 // What a chat's latest model request says about its prompt cache, read from
 // its transcript. `ttlMs` is the lifetime the request's cache write used (1 hour

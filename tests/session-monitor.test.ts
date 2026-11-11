@@ -1,5 +1,6 @@
-import type { AgentSpawnInput, CommandRunInput, On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import type { AgentInfo, AgentSpawnInput, CommandRunInput, On } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 // The full inputs the engine hands a hook, so a test names only what it cares about
 const commandInput = (command: string): CommandRunInput => ({
@@ -539,6 +540,120 @@ test('the pane shows the plan: flow bar, every task, and progress once a task ru
 test('with no plan posted the pane has no Plan section', async ($, on) => {
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
   await $.agent.spawn(spawnInput('look around', 'map the repo', 'general-purpose'))
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^Plan$/ })) === undefined).toBe(true)
+  await ui.unmount()
+})
+
+// The engine's agent list as one entry would read it
+const listed = (id: string, description: string, status: AgentInfo['status']): AgentInfo => ({
+  id,
+  description,
+  type: 'general-purpose',
+  status,
+})
+
+// Starts the session so the once-a-second sync is scheduled on a test clock
+const startSession = async ($: Engine, on: On): Promise<ReturnType<typeof mock.clock>> => {
+  const clock = mock.clock(on)
+  mock.env(on, {})
+  // What the start hook and the sync ask of the engine, answered plainly
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('session.start', (_$, e) => e)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { percent: 0, tokens: 0, window: 200000 }, rateLimits: [] } }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  return clock
+}
+
+// A new typed prompt, as the person sends it. The test answers turn.start
+// itself, before its first call on $.
+const prompt = async ($: Engine, text: string): Promise<void> => {
+  await $.turn.start({ text, turnId: 'turn-' + text.length })
+}
+
+test('a failed engine call in the sync does not stop the pane updating', async ($, on) => {
+  on('agent.list', () => {
+    throw new Error('engine went away')
+  })
+  const clock = await startSession($, on)
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE)
+  // The failure is recorded and named, and the rest of the sync still ran
+  expect((await ui.find({ type: 'Text', text: /^sync problem: agents: / })) === undefined).toBe(false)
+  expect((await ui.find({ type: 'Text', text: /sync problem: usage/ })) === undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('an agent that is waiting or queued is not shown as failed', async ($, on) => {
+  let n = 0
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
+  on('agent.list', () => ({ value: [listed('agent-1', 'waits on input', 'waiting'), listed('agent-2', 'queued up', 'pending')] }))
+  const toasts: string[] = []
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const clock = await startSession($, on)
+  await $.agent.spawn(spawnInput('wait for the build to finish', 'waits on input', 'general-purpose'))
+  await $.agent.spawn(spawnInput('run after the first one', 'queued up', 'general-purpose'))
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /Needs attention/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^✗$/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /2 running/ })) === undefined).toBe(false)
+  // The sync took the engine's statuses: both are drawn as waiting
+  expect((await ui.findAll({ type: 'Text', text: /^◌$/ })).length).toBe(2)
+  expect(toasts.some(t => /failed|waiting|queued/.test(t))).toBe(false)
+  await ui.unmount()
+})
+
+test('the sync does not put the [task:id] marker back in the name', async ($, on) => {
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
+  on('agent.list', () => ({ value: [listed('agent-1', '[task:t1] plan tool', 'running')] }))
+  const clock = await startSession($, on)
+  await $.agent.spawn(spawnInput('build the plan tool', '[task:t1] plan tool', 'general-purpose'))
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE)
+  // The name is the agent's button, so that is where the marker would show
+  expect((await ui.find({ type: 'Button', text: /\[task:/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Button', text: /plan tool/ })) === undefined).toBe(false)
+  await ui.unmount()
+})
+
+test('a finished task stays done after the next prompt, and a waiting agent stays listed', async ($, on) => {
+  let n = 0
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-' + ++n }))
+  on('agent.list', () => ({ value: [listed('agent-1', 'plan tool', 'completed'), listed('agent-2', 'watcher', 'waiting')] }))
+  on('tool.call', () => ({ result: 'unhandled' }))
+  on('turn.complete', () => ({ text: '' }))
+  const clock = await startSession($, on)
+  await $.tool.call(planCall({ title: 'ship it', phase: 'tasks', tasks: [{ id: 't1' }, { id: 't2' }] }))
+  await $.agent.spawn(spawnInput('build the plan tool', '[task:t1] plan tool', 'general-purpose'))
+  await $.agent.spawn(spawnInput('watch the build output', 'watcher', 'general-purpose'))
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'turn-1', agentId: 'agent-1', reason: 'answer' })
+  await clock.advance(1000)
+
+  await prompt($, 'what next?')
+  await clock.advance(1000)
+  expect(String((await $.tool.call(planCall({}))).result)).toBe('ok: "ship it", phase tasks, 2 tasks (1 done)')
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'open-agent-2' })) === undefined).toBe(false)
+  expect((await ui.find({ key: 'open-agent-1' })) === undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('a plan that reached done clears on the next prompt, and one still going stays', async ($, on) => {
+  on('tool.call', () => ({ result: 'unhandled' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await $.tool.call(planCall({ title: 'still going', phase: 'review', tasks: [{ id: 't1' }] }))
+  await prompt($, 'keep going')
+  expect(String((await $.tool.call(planCall({}))).result)).toBe('ok: "still going", phase review, 1 task (0 done)')
+
+  await $.tool.call(planCall({ phase: 'done' }))
+  await prompt($, 'thanks, next thing')
+  expect(String((await $.tool.call(planCall({}))).result)).toBe('ok: phase none, 0 tasks (0 done)')
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ type: 'Text', text: /^Plan$/ })) === undefined).toBe(true)
   await ui.unmount()
