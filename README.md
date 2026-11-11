@@ -11,6 +11,7 @@ It was called `agent-monitor` until 0.2.0, when it grew past agents. Plugin name
 | `/session-monitor` | The full pane: this session, usage limits, cache, other chats and agents |
 | `/agent-monitor` | The same pane showing agents only: no limits, cache gauge or other chats |
 | `/agent-report` | The report on what the agents did |
+| `/session-monitor:orchestrate` | A skill that runs multi-task work through subagents and posts the plan to the pane |
 
 It is one pane with two views, not two plugins. Press `m` in the pane (the `View:` button) to switch between full and agents-only. Agents-only hides My Plan, the cache gauge, Other chats, the idle and cache hotkeys and the `<o>` note, and keeps the context meter, subagents, Needs attention, filter, search and the report.
 
@@ -45,8 +46,10 @@ Copy the folder somewhere permanent (for example `~/mods/agent-monitor`) and add
 - Header: running / done / failed counts, session cost, session tokens (in = uncached + cache writes, out, total, cached), a context-window meter with tokens used, window size and tokens left, and the prompt-cache figures (hit %, read, written, uncached) for the main session's latest request. These are real figures.
 - Each running agent: run time, a progress bar with `~%`, tool calls, tokens (in, out, total; dashes until the first response is reported), and its latest tool call. Finished agents show two quiet lines.
 - Press an agent's name (Tab to it, Enter) to open what it did: its task, its recent tool calls with timestamps, and the result it reported back.
-- A new prompt starts a new run: agents that finished in earlier runs are cleared automatically. `c` clears them on demand.
+- A new prompt starts a new run: agents that finished in earlier runs are cleared automatically. `c` clears them on demand. An agent that is queued or waiting (`◌`, yellow) has not finished: it stays listed, counts as running and is never shown as failed.
 - Step tool: the mod adds `mcp__session-monitor__step` (`done`, `total`, `note`) so a subagent can report its own steps. Only a subagent's call counts; the main session's is ignored, and a step report is not counted as a tool call. A running agent that reports shows a real bar (`40%`, `2/5 steps`, and `now: <step>`), held at 99% until it finishes; one that never reports keeps the estimate.
+- Plan: the mod adds `mcp__session-monitor__plan` so the main session can post its plan: a `title`, a `phase` (plan, design, tasks, review, done) and `tasks` with an `id`, `title`, `tier`, `dependsOn` and `status`. Calls send only what changed; tasks are matched by id, so a rename keeps a task's place and status, and a new title starts a new plan. A subagent's call is ignored. The pane shows a Plan section under the header: the title, tasks done, a flow bar (`✓ Plan › ✓ Design › Tasks 2/5 › Review › Done`), and every task with `○` planned, `●` running, `✓` done, `✗` failed or `–` skipped, its tier, what it still waits on (`after t2`), and its run's progress. The `orchestrate` skill tells the main session how to use it.
+- Task runs: a spawn whose description or prompt has `[task:<id>]` is linked to that plan task. The task then follows its newest run (running, done, failed), unless the main session posts a verdict (`done`, `failed`, `skipped`), which wins. The marker is left out of the agent's name. A task keeps how its last run ended after that run is cleared, and a plan that reached `done` clears on the next prompt.
 - Without step reports, progress is an estimate. Claude Code doesn't report how far through its work an agent is, so the bar is derived from tool calls and held under 95% until the agent finishes.
 
 - Cache gauge: a hit-rate bar (green ≥70%, yellow ≥40%, red below) and a time-left bar for the prompt cache, counting down from the main session's last request. The lifetime (5 minutes or 1 hour) is read from the chat's transcript, from the newest request that wrote to the cache; with none to go on it assumes 5 minutes and shows `5m?`. When it hits zero the pane says the next request rebuilds the cache.
@@ -118,6 +121,8 @@ The focus helper (`scripts/focus-window.cjs`) runs on Windows (through `focus-wi
 - `hooks/register.ts`: the hooks and the pane
 - `hooks/rows.ts`, `report.ts`, `transcripts.ts`, `format.ts`, `util.ts`, `constants.ts`, `limits.ts`, `state.ts`: agent rows and cost, the report, transcript readers, formatting and shared state. The state atoms stay in `register.ts`, because the engine needs each atom defined in the file that reads and writes it.
 - `scripts/`: focus helper, big-transcript reader, window cost reader
+- `hooks/plan.ts`: the posted plan, task matching and the flow bar
+- `skills/orchestrate/SKILL.md`: the orchestrator skill
 - `tests/session-monitor.test.ts`: pane tests
 - `CHANGELOG.md`: what changed in each version
 

@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { AgentRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
+import type { AgentRow, PlanRow, RunRecord, SessionRow, StatsRow, ViewRow } from '../types'
 
-import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, SHOW_LOG, STEP_TOOL, WARN_CACHE_MS } from './constants'
+import { CACHE_TTL_MS, CONVO_WORKING_MS, LONG_MS, LOOP_AT, MAX_REPORT_VIEW, MAX_RUNS, MAX_TRANSCRIPT_BYTES, ORPHAN_MS, OTHER_STEP_TOOLS, PANE, PLAN_TOOL, SHOW_LOG, SHOW_TASKS, STEP_TOOL, WARN_CACHE_MS } from './constants'
 import { bar, clock, clockText, cut, fileStamp, fmt, money, seconds, tokenLine, untilText } from './format'
 import { LIMIT_NAMES, PLAN_COST_EVERY_MS, planCost } from './limits'
+import { PHASES, TASK_MARKS, TASK_STATUSES, flowSteps, planAck, planForNextRun, readPlanReport, runOf, settleTasks, taskIdOf, taskStatus, waitingOn, withPlan, withoutTaskMark } from './plan'
 import { buildCsv, buildJson, buildReport, historyText, reportsDir, runSection } from './report'
-import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
+import { RATES, addSession, addTokens, bumpTool, colorOf, dismissFinished, elapsed, hasSteps, isActive, isDone, isFailed, marker, matches, merge, ordered, progressOf, readStepReport, rollup, statusWord, summarize, upsert, withStepBrief, withSteps } from './rows'
 import { alerted, flags, hidden, listedIds } from './state'
 import { cacheStats, focusProbe, isBusy, latestNote, latestPrompt, live, liveExtra, mainTtlMs, subsOf, toolStats, ttlLabel, turnProgress, turnTools, usageStats, usdOf } from './transcripts'
 import { isRecord, num, oneLine, parseJson, str } from './util'
@@ -25,6 +26,8 @@ const session = atom(
 const view = atom({ plugin: 'session-monitor', key: 'view' } as const, {} as ViewRow)
 const runs = atom({ plugin: 'session-monitor', key: 'runs' } as const, [] as RunRecord[])
 const stats = atom({ plugin: 'session-monitor', key: 'stats' } as const, {} as StatsRow)
+const noPlan: PlanRow = { tasks: [] }
+const plan = atom({ plugin: 'session-monitor', key: 'plan' } as const, noPlan)
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
@@ -62,6 +65,39 @@ export const register: Register = (on, options) => {
           note: { type: 'string', description: 'Short label for what you are working on now.' },
         },
         required: ['done'],
+      },
+      isDeferred: false,
+    })
+
+    // Lets the main session post its plan, so the pane can show every task
+    // before it runs. Only the main session posts; a worker's call is ignored.
+    await $.tool.register({
+      name: 'plan',
+      description:
+        'Post or update your plan in the session monitor. Call it when you plan the work, when the phase changes, ' +
+        'and as tasks start and finish. Tasks are matched by `id`, so send only the ones that changed; renaming a task ' +
+        'keeps its place. A call with a new `title` starts a new plan. Only the main session can post.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'What the whole flow is for, a few words.' },
+          phase: { type: 'string', enum: PHASES, description: 'Where the flow is now.' },
+          tasks: {
+            type: 'array',
+            description: 'Tasks to add or update.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Short stable id, such as t1. Use the same id in every call.' },
+                title: { type: 'string', description: 'What the task does.' },
+                tier: { type: 'string', description: 'Worker tier or model the task is meant for.' },
+                dependsOn: { type: 'array', items: { type: 'string' }, description: 'Ids of tasks that must finish first.' },
+                status: { type: 'string', enum: TASK_STATUSES },
+              },
+              required: ['id'],
+            },
+          },
+        },
       },
       isDeferred: false,
     })
@@ -344,20 +380,23 @@ export const register: Register = (on, options) => {
       }
     })
 
-    // Once a second: pull agent status and the context fill from the engine,
-    // and redraw so run times and the cache countdown tick
-    $.clock.every(1000, async () => {
+    // Brings the rows in line with the engine's agent list
+    const syncAgents = async (): Promise<void> => {
       const infos = await $.agent.list()
       if (!flags.seeded) {
-        // Agents that had already finished before this mod loaded belong to
-        // an earlier run: keep them out
+        // Agents that had already stopped before this mod loaded belong to an
+        // earlier run: keep them out
         flags.seeded = true
         infos.forEach(info => {
-          if (info.status !== 'running') hidden[info.id] = true
+          if (!isActive(info.status)) hidden[info.id] = true
         })
       }
-      const live = infos.filter(info => !hidden[info.id])
-      await update($, agents, list => merge(list, live))
+      // The name is the description with its [task:id] marker taken out, the
+      // same as at spawn, or the sync would put the marker back every second
+      const shown = infos
+        .filter(info => !hidden[info.id])
+        .map(info => Object.assign({}, info, { description: withoutTaskMark(info.description || '') || info.description }))
+      await update($, agents, list => merge(list, shown))
       // A row the engine's agent list has never heard of (a tool call tagged
       // with an agent id that was not spawned here) is not a real agent: drop it
       // once it is a few seconds old, and keep it out unless it does more work
@@ -373,6 +412,11 @@ export const register: Register = (on, options) => {
           return false
         }),
       )
+    }
+
+    // The context fill, cost and usage limits, with a toast for a limit past
+    // 90%, once per window
+    const syncUsage = async (): Promise<void> => {
       const usage = await $.session.usage()
       await update($, session, s =>
         Object.assign({}, s, {
@@ -387,7 +431,6 @@ export const register: Register = (on, options) => {
           })),
         }),
       )
-      // A usage limit past 90%, once per window
       usage.rateLimits.forEach(r => {
         const key = 'limit-' + r.kind + '-' + (r.resetsAt || '')
         if (num(r.percentUsed) >= 90 && !alerted[key]) {
@@ -396,9 +439,11 @@ export const register: Register = (on, options) => {
           $.ui.toast((LIMIT_NAMES[r.kind] || r.kind) + ' is ' + Math.round(num(r.percentUsed)) + '% used.' + when)
         }
       })
+    }
 
-      // Alerts, each shown once: an agent that has run a long time, one that
-      // failed, and a prompt cache about to lapse
+    // Alerts, each shown once: an agent that has run a long time, one that
+    // failed, and a prompt cache about to lapse
+    const raiseAlerts = async (): Promise<void> => {
       const now = Date.now()
       const rows = await read($, agents)
       rows.forEach(row => {
@@ -418,6 +463,26 @@ export const register: Register = (on, options) => {
         if (cacheLeft > 0 && cacheLeft <= WARN_CACHE_MS && !alerted['cache-' + sess.lastAt]) {
           alerted['cache-' + sess.lastAt] = true
           $.ui.toast('Prompt cache expires in about ' + seconds(cacheLeft) + '. Send a prompt to keep it warm.')
+        }
+      }
+    }
+
+    // Once a second: pull agent status and the context fill from the engine,
+    // and redraw so run times and the cache countdown tick. Each part is
+    // guarded on its own and the redraw always runs, so one failed engine
+    // call cannot freeze the pane.
+    $.clock.every(1000, async () => {
+      const parts: Array<{ name: string; run: () => Promise<void> }> = [
+        { name: 'agents', run: syncAgents },
+        { name: 'usage', run: syncUsage },
+        { name: 'alerts', run: raiseAlerts },
+      ]
+      live.tickError = ''
+      for (const part of parts) {
+        try {
+          await part.run()
+        } catch (err) {
+          live.tickError = part.name + ': ' + oneLine(String(err), 120)
         }
       }
       $.ui.invalidate('ui.render')
@@ -460,10 +525,14 @@ export const register: Register = (on, options) => {
       return Object.assign({}, s, { runPrompt: oneLine(e.text, 200), runAt: Date.now() })
     })
 
+    // The plan goes first, while the rows it reads are still in the list
+    const before = await read($, agents)
+    await update($, plan, current => planForNextRun(current, before))
+
     let finished: AgentRow[] = []
     await update($, agents, list => {
       finished = list
-        .filter(row => (row.id === 'main' ? row.tools > 0 : row.status !== 'running'))
+        .filter(row => (row.id === 'main' ? row.tools > 0 : !isActive(row.status)))
         .map(row => Object.assign({}, row, { log: row.log.slice(-20) }))
       return upsert(dismissFinished(list), 'main', {
         status: 'running',
@@ -516,7 +585,8 @@ export const register: Register = (on, options) => {
       delete hidden[id]
       await update($, agents, list =>
         upsert(list, id, {
-          name: e.name || e.description,
+          name: e.name || withoutTaskMark(e.description) || e.description,
+          taskId: taskIdOf(e.description || '', e.prompt || ''),
           type: e.subagentType,
           parentId: e.parentAgentId || 'main',
           status: 'running',
@@ -548,13 +618,23 @@ export const register: Register = (on, options) => {
     return { result: 'ok: ' + num(found.row.stepDone) + '/' + num(found.row.stepTotal) }
   })
 
+  // The main session's plan. A worker's call changes nothing: the plan is the
+  // orchestrator's, and a worker posting one would replace it.
+  on('tool.call', { tool: PLAN_TOOL }, async ($, e) => {
+    if (e.agentId) return { result: 'ignored: only the main session posts the plan' }
+    const report = readPlanReport(e)
+    const now = Date.now()
+    await update($, plan, current => withPlan(current, report, now))
+    return { result: planAck(await read($, plan), await read($, agents)) }
+  })
+
   // Every tool call, attributed to the loop it ran in
   on('tool.call', async ($, e, next) => {
     // A subagent's report back to its parent, and a step report, are not work
     // the agent did. The engine's tool typings do not list SubagentHandback,
     // so the name is compared as a string.
     const toolName: string = e.tool
-    if (toolName === 'SubagentHandback' || toolName === STEP_TOOL) return next(e)
+    if (toolName === 'SubagentHandback' || toolName === STEP_TOOL || toolName === PLAN_TOOL) return next(e)
     // Another mod's step tool (savvy-progress installed alongside): its report
     // feeds this pane's bar too, and it is not counted as a call
     if (OTHER_STEP_TOOLS.indexOf(toolName) >= 0) {
@@ -615,7 +695,7 @@ export const register: Register = (on, options) => {
     const id = e.agentId || 'main'
     const seen: { row?: AgentRow } = {}
     await update($, agents, list => {
-      seen.row = list.filter(row => row.id === id && row.status === 'running')[0]
+      seen.row = list.filter(row => row.id === id && isActive(row.status))[0]
       if (id === 'main') return upsert(list, 'main', { status: 'idle', endedAt: Date.now() })
       const patch: Partial<AgentRow> = { status: e.isAborted ? 'killed' : 'done', endedAt: Date.now() }
       if (e.answer) patch.result = oneLine(e.answer, 500)
@@ -735,13 +815,13 @@ export const register: Register = (on, options) => {
     // ---- the live view -----------------------------------------------------
     const query = v.query || ''
     const shownList = list.filter(row => {
-      if (v.filter === 'running' && row.status !== 'running') return false
+      if (v.filter === 'running' && !isActive(row.status)) return false
       if (v.filter === 'failed' && !isFailed(row.status) && num(row.errors) === 0) return false
       return matches(row, query)
     })
     const rows = ordered(shownList)
     const subs = list.filter(row => row.id !== 'main')
-    const running = subs.filter(row => row.status === 'running').length
+    const running = subs.filter(row => isActive(row.status)).length
     const finished = subs.filter(row => isDone(row.status)).length
     const failed = subs.filter(row => isFailed(row.status)).length
 
@@ -784,6 +864,8 @@ export const register: Register = (on, options) => {
                 hotkey: 'c',
                 plain: true,
                 onPress: async () => {
+                  const cleared = await read($, agents)
+                  await update($, plan, current => settleTasks(current, cleared))
                   await update($, agents, current => dismissFinished(current))
                   await update($, view, current =>
                     current.openId && hidden[current.openId] ? Object.assign({}, current, { openId: undefined }) : current,
@@ -1541,6 +1623,7 @@ export const register: Register = (on, options) => {
         idleSection.length > 0 ? [Text({ children: [' '] })] : [],
         idleSection,
         live.convoError ? [Text({ color: 'red', wrap: 'wrap', children: ['scan problem: ' + live.convoError] })] : [],
+        live.tickError ? [Text({ color: 'red', wrap: 'wrap', children: ['sync problem: ' + live.tickError] })] : [],
       ),
     })
 
@@ -1551,6 +1634,77 @@ export const register: Register = (on, options) => {
           ? blocks
           : [Text({ dimColor: true, children: ['Nothing matches the filter or search.'] })]
 
+    // The plan the main session posted: a flow bar through the phases, then
+    // every task, planned ones included, with its run's progress once it runs
+    const posted = await read($, plan)
+    const planSection: ReturnType<typeof Box>[] = []
+    if (posted.tasks.length > 0 || posted.title) {
+      const doneCount = posted.tasks.filter(t => taskStatus(t, list) === 'done').length
+      const steps = flowSteps(posted, list)
+      const shownTasks = posted.tasks.slice(0, SHOW_TASKS)
+      const taskLines = shownTasks.map(task => {
+        const status = taskStatus(task, list)
+        const look = TASK_MARKS[status]
+        const run = runOf(task, list)
+        const waits = status === 'planned' ? waitingOn(task, posted, list) : []
+        const extra =
+          (task.tier ? ' [' + task.tier + ']' : '') +
+          (status === 'running' && run ? ' ' + (hasSteps(run) ? '' : '~') + progressOf(run, learned) + '%' : '') +
+          (waits.length > 0 ? ' · after ' + waits.join(', ') : '')
+        return Box({
+          key: 'task-' + task.id,
+          flexDirection: 'row',
+          columnGap: 1,
+          children: [
+            Text({ color: look.color, dimColor: status === 'planned' || status === 'skipped', children: [look.mark] }),
+            Text({
+              dimColor: status === 'skipped',
+              strikethrough: status === 'skipped',
+              children: [cut(task.title + extra, cols - 4)],
+            }),
+          ],
+        })
+      })
+      if (posted.tasks.length > shownTasks.length) {
+        taskLines.push(Text({ dimColor: true, children: ['  +' + (posted.tasks.length - shownTasks.length) + ' more'] }))
+      }
+      planSection.push(
+        Box({
+          flexDirection: 'column',
+          children: [
+            Box({
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              width: cols,
+              children: [
+                Box({
+                  flexDirection: 'row',
+                  columnGap: 2,
+                  children: [
+                    Text({ bold: true, children: ['Plan'] }),
+                    Text({ dimColor: true, children: [cut(posted.title || '', Math.max(8, cols - 20))] }),
+                  ],
+                }),
+                Text({ children: [posted.tasks.length > 0 ? doneCount + '/' + posted.tasks.length + ' done' : ''] }),
+              ],
+            }),
+            Box({
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              children: steps.map((step, i) =>
+                Text({
+                  bold: step.state === 'current',
+                  color: step.state === 'current' ? 'cyan' : step.state === 'past' ? 'green' : undefined,
+                  dimColor: step.state === 'future',
+                  children: [(i > 0 ? ' › ' : '') + (step.state === 'past' ? '✓ ' : '') + step.label],
+                }),
+              ),
+            }),
+          ].concat(taskLines),
+        }),
+      )
+    }
+
     // The footer sits at the bottom of the pane: the content grows to fill
     // whatever room the dock gives, and the footer follows it
     const bodyRows = e.props.scroll ? num(e.props.scroll.bodyRows) : 0
@@ -1559,6 +1713,7 @@ export const register: Register = (on, options) => {
       flexGrow: 1,
       rowGap: 1,
       children: [Box({ flexDirection: 'column', children: summary })].concat(
+        planSection,
         attention,
         subs.length > 0 ? search : [],
         [Box({ flexDirection: 'column', rowGap: 1, children: body })],

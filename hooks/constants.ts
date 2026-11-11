@@ -12,6 +12,11 @@ export const ORPHAN_MS = 20 * 1000
 // The tool workers call to report their own steps, named as the model sees it
 export const STEP_TOOL = 'mcp__session-monitor__step'
 
+// The tool the main session calls to post its plan: title, phase and tasks
+export const PLAN_TOOL = 'mcp__session-monitor__plan'
+// Tasks listed in the pane's Plan section before the rest fold into "+N more"
+export const SHOW_TASKS = 12
+
 // Step tools from other mods that take the same done/total/note report. When
 // one is installed alongside, its calls feed this pane's bar and are not
 // counted as work the agent did.
