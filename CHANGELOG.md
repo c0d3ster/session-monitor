@@ -4,6 +4,21 @@ All notable changes to session-monitor (called agent-monitor until 0.2.0). Newes
 
 From the next release on, this file and the version in `plugin.json` are written by release-please from the commit messages (see the release PR it opens). Entries below were written by hand.
 
+## [0.5.0](https://github.com/c0d3ster/session-monitor/compare/v0.4.0...v0.5.0) (2026-11-25)
+
+
+### Features
+
+* add a plan tool the main session uses to post its plan ([c100ff6](https://github.com/c0d3ster/session-monitor/commit/c100ff60e6041cefa31d7e6f27ba8df63b25a827)), closes [#7](https://github.com/c0d3ster/session-monitor/issues/7)
+* match planned tasks to runs by task id ([a199d1a](https://github.com/c0d3ster/session-monitor/commit/a199d1a3ed8b6994ac30bbde978b4a79df8e6f20)), closes [#10](https://github.com/c0d3ster/session-monitor/issues/10)
+* ship an orchestrate skill that posts the plan to the pane ([b429fe3](https://github.com/c0d3ster/session-monitor/commit/b429fe3b7882f46189c9d5b931f5f5b73ef0b0d2)), closes [#9](https://github.com/c0d3ster/session-monitor/issues/9)
+* show the posted plan as a Plan section with a flow bar ([2b9b157](https://github.com/c0d3ster/session-monitor/commit/2b9b1574038345108316cecf954e72901570c1ca)), closes [#8](https://github.com/c0d3ster/session-monitor/issues/8)
+
+
+### Bug Fixes
+
+* keep the pane live and the plan right across prompts ([e40d673](https://github.com/c0d3ster/session-monitor/commit/e40d673a8fa6fbe54507e70cefcd60b09d068680))
+
 ## [0.4.0](https://github.com/c0d3ster/session-monitor/compare/v0.3.0...v0.4.0) (2026-11-09)
 
 
